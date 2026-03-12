@@ -1,0 +1,16 @@
+version: '3'
+services:
+  redis:
+    restart: always
+    image: redis:7.4.0
+    # network_mode: host
+    container_name: redis-label
+    volumes:
+      - /apps/redis/datadir:/data
+      - /apps/redis/conf/redis.conf:/home/jinchenyuan/backend-app/redis/redis.conf
+      - /apps/redis/logs:/logs
+    command: redis-server --appendonly yes
+    ports:
+      # 使用宿主机的端口映射到容器的端口
+      # 宿主机：容器
+      - 6379:6379

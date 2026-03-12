@@ -1,0 +1,28 @@
+version: '3.8'
+
+services:
+  traefik:
+    image: traefik:v2.10
+    container_name: traefik
+    restart: always
+    command:
+      - "--api.dashboard=true"
+      - "--api.insecure=true"
+      - "--providers.docker=true"
+      - "--providers.file.filename=/etc/traefik/dynamic.yml"
+      - "--entrypoints.web.address=:80"
+      - "--entrypoints.websecure.address=:443"
+      - "--log.level=DEBUG"
+      - "--accesslog=true"
+    ports:
+      - "8081:80"
+      - "8080:8080" # API 默认端口
+    volumes:
+      - "/var/run/docker.sock:/var/run/docker.sock:ro"
+      - "./dynamic.yml:/etc/traefik/dynamic.yml:ro"
+    networks:
+      - traefik-net
+
+networks:
+  traefik-net:
+    driver: bridge

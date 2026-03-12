@@ -1,0 +1,54 @@
+http:
+  routers:
+    api-router:
+      rule: "PathPrefix(`/admin`)"
+      service: admin-service
+      entryPoints:
+        - web
+
+    account-router:
+      rule: "PathPrefix(`/account`)"
+      service: account-service
+      entryPoints:
+        - web
+
+    s3-router:
+      rule: "PathPrefix(`/s3`)"
+      service: s3-service
+      entryPoints:
+        - web
+
+    hello-router:
+      rule: "Path(`/hello`)"           # 精确匹配 /hello
+      service: hello-service
+      entryPoints:
+        - web
+      middlewares:
+        - hello-rewrite
+
+  middlewares:
+    hello-rewrite:
+      replacePathRegex:
+        regex: "^/hello/?$"
+        replacement: "/hello.html"
+
+  services:
+    admin-service:
+      loadBalancer:
+        servers:
+          - url: "http://192.168.1.80:8082"
+
+    account-service:
+      loadBalancer:
+        servers:
+          - url: "http://192.168.1.80:8083"
+
+    s3-service:
+      loadBalancer:
+        servers:
+          - url: "http://192.168.1.80:8084"
+
+    hello-service:
+      loadBalancer:
+        servers:
+          - url: "http://192.168.1.80:8888"

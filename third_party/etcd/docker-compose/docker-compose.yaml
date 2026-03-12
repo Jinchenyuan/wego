@@ -1,0 +1,58 @@
+services:
+  etcd:
+    image: quay.io/coreos/etcd:v3.5.1
+    container_name: etcd
+    command: >
+      /usr/local/bin/etcd
+      --name etcd-node
+      --auth-token=simple
+      --data-dir /etcd-data
+      --listen-client-urls http://0.0.0.0:2379
+      --advertise-client-urls http://etcd:2379
+      --listen-peer-urls http://0.0.0.0:2380
+      --initial-advertise-peer-urls http://etcd:2380
+      --initial-cluster etcd-node=http://etcd:2380
+    volumes:
+      - ./etcd-data:/etcd-data
+    ports:
+      - "2379:2379"
+    restart: unless-stopped
+
+  etcd-init:
+    image: quay.io/coreos/etcd:v3.5.1
+    container_name: etcd-init
+    depends_on:
+      - etcd
+    restart: "no"
+    entrypoint: ["/bin/sh", "-lc"]
+    command: |
+      set -e
+
+      export ETCDCTL_API=3
+      ENDPOINT="http://etcd:2379"
+
+      echo "[etcd-init] waiting for etcd..."
+      until etcdctl --endpoints="${ENDPOINT}" endpoint health >/dev/null 2>&1; do
+        sleep 1
+      done
+      echo "[etcd-init] etcd is up."
+
+      # 幂等：如果已经启用认证，则直接退出（避免重复初始化报错）
+      if etcdctl --endpoints="${ENDPOINT}" auth status >/dev/null 2>&1; then
+        if etcdctl --endpoints="${ENDPOINT}" auth status | grep -qi "true"; then
+          echo "[etcd-init] auth already enabled; skip init."
+          exit 0
+        fi
+      fi
+
+      echo "[etcd-init] creating root user/role..."
+      # 创建用户/角色（已存在时忽略错误，保证幂等）
+      etcdctl --endpoints="${ENDPOINT}" user add root:123456 || true
+      etcdctl --endpoints="${ENDPOINT}" role add root || true
+      etcdctl --endpoints="${ENDPOINT}" role grant-permission root --prefix=true readwrite / || true
+      etcdctl --endpoints="${ENDPOINT}" user grant-role root root || true
+
+      echo "[etcd-init] enabling auth..."
+      etcdctl --endpoints="${ENDPOINT}" auth enable || true
+
+      echo "[etcd-init] done."

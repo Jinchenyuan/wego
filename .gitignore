@@ -1,0 +1,68 @@
+# Binaries for programs and plugins
+*.exe
+*.exe~
+*.dll
+*.so
+*.dylib
+*.test
+*.out
+
+# Dependency directories
+vendor/
+go/pkg/
+
+# Go workspace file
+go.work
+
+# IDE specific files
+.idea/
+settings.json
+*.swp
+*.swo
+
+# Environment files
+.env.local
+.env.*.local
+
+# Build output
+bin/
+dist/
+Debug/
+obj/
+
+# Test output
+coverage.txt
+profile.out
+
+# Debug files
+debug
+
+# OS generated files
+.DS_Store
+.DS_Store?
+._*
+.Spotlight-V100
+.Trashes
+ehthumbs.db
+Thumbs.db
+
+# Log files
+*.log
+
+# Go modules directory
+go.sum
+
+# postgres
+pgdata
+
+# etcd
+etcd-data
+
+#config
+config.toml
+
+# redis
+redis-data
+
+# traefik
+dynamic.yml
