@@ -1,7 +1,7 @@
 package micro
 
 import (
-	"github.com/Jinchenyuan/wego/core/transport"
+	"github.com/Jinchenyuan/wego/transport"
 	"go-micro.dev/v5/registry"
 )
 

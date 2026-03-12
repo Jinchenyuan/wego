@@ -3,7 +3,7 @@ package http
 import (
 	"net"
 
-	"github.com/Jinchenyuan/wego/core/transport"
+	"github.com/Jinchenyuan/wego/transport"
 )
 
 type Options func(o *options)

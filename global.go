@@ -1,9 +1,9 @@
-package core
+package wego
 
 import (
 	"sync/atomic"
 
-	"github.com/Jinchenyuan/wego/core/logger"
+	"github.com/Jinchenyuan/wego/logger"
 )
 
 var globalMesa atomic.Value // stores *Mesa

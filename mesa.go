@@ -1,14 +1,14 @@
-package core
+package wego
 
 import (
 	"context"
 	"database/sql"
 	"fmt"
-	"github.com/Jinchenyuan/wego/core/logger"
-	"github.com/Jinchenyuan/wego/core/transport"
-	"github.com/Jinchenyuan/wego/core/transport/http"
-	"github.com/Jinchenyuan/wego/core/transport/micro"
+	"github.com/Jinchenyuan/wego/logger"
 	"github.com/Jinchenyuan/wego/third_party/etcd"
+	"github.com/Jinchenyuan/wego/transport"
+	"github.com/Jinchenyuan/wego/transport/http"
+	"github.com/Jinchenyuan/wego/transport/micro"
 	"net"
 	"os"
 	"os/signal"

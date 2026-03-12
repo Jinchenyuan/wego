@@ -1,9 +1,9 @@
-package core
+package wego
 
 import (
-	"github.com/Jinchenyuan/wego/core/logger"
-	"github.com/Jinchenyuan/wego/core/transport"
-	"github.com/Jinchenyuan/wego/core/transport/micro"
+	"github.com/Jinchenyuan/wego/logger"
+	"github.com/Jinchenyuan/wego/transport"
+	"github.com/Jinchenyuan/wego/transport/micro"
 	clientv3 "go.etcd.io/etcd/client/v3"
 )
 

@@ -6,7 +6,7 @@ import (
 	"log"
 	"net/http"
 
-	"github.com/Jinchenyuan/wego/core/transport"
+	"github.com/Jinchenyuan/wego/transport"
 	"github.com/gin-gonic/gin"
 )
 

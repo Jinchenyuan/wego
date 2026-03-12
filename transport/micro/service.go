@@ -5,7 +5,7 @@ import (
 	"fmt"
 	"log"
 
-	"github.com/Jinchenyuan/wego/core/transport"
+	"github.com/Jinchenyuan/wego/transport"
 	goMicro "go-micro.dev/v5"
 	"go-micro.dev/v5/registry"
 )
