@@ -15,8 +15,6 @@ This is a microservices project based on **go-micro**, It is suitable for lightw
 - Cache: **Redis**
 - Database: **PostgreSQL**
 - Service discovery & configuration: **etcd**
-```bash
-```
 
 ## Reminder MVP
 
