@@ -3,18 +3,20 @@ package wego
 import (
 	"context"
 	"database/sql"
+	"errors"
 	"fmt"
-	"github.com/Jinchenyuan/wego/logger"
-	"github.com/Jinchenyuan/wego/third_party/etcd"
-	"github.com/Jinchenyuan/wego/transport"
-	"github.com/Jinchenyuan/wego/transport/http"
-	"github.com/Jinchenyuan/wego/transport/micro"
 	"net"
 	"os"
 	"os/signal"
 	"sync"
 	"syscall"
 	"time"
+
+	"github.com/Jinchenyuan/wego/logger"
+	"github.com/Jinchenyuan/wego/third_party/etcd"
+	"github.com/Jinchenyuan/wego/transport"
+	"github.com/Jinchenyuan/wego/transport/http"
+	"github.com/Jinchenyuan/wego/transport/micro"
 
 	redis "github.com/redis/go-redis/v9"
 	"github.com/uptrace/bun"
@@ -26,14 +28,20 @@ import (
 
 var log *logger.Logger
 
+var ErrRuntimeStarted = errors.New("mesa runtime already started")
+
 type Mesa struct {
-	opts          options
-	retChan       chan int
-	etcdCtl       *etcd.Ctl
-	serversCtx    context.Context
-	serversCancel context.CancelFunc
-	DB            *bun.DB
-	Redis         *redis.Client
+	opts           options
+	retChan        chan int
+	etcdCtl        *etcd.Ctl
+	serversCtx     context.Context
+	serversCancel  context.CancelFunc
+	DB             *bun.DB
+	Redis          *redis.Client
+	runtimeMu      sync.RWMutex
+	runtimeStarted bool
+	components     []Component
+	componentIndex map[string]Component
 }
 
 func New(opts ...Options) *Mesa {
@@ -85,11 +93,12 @@ func New(opts ...Options) *Mesa {
 	initLogger(o)
 
 	m := &Mesa{
-		opts:    o,
-		retChan: make(chan int),
-		etcdCtl: etcdCtl,
-		DB:      db,
-		Redis:   rdb,
+		opts:           o,
+		retChan:        make(chan int),
+		etcdCtl:        etcdCtl,
+		DB:             db,
+		Redis:          rdb,
+		componentIndex: make(map[string]Component),
 	}
 
 	SetGlobalMesa(m)
@@ -100,7 +109,7 @@ func New(opts ...Options) *Mesa {
 func (m *Mesa) Run() error {
 	log.Info("start mesa!")
 
-	m.startServers()
+	m.startRuntime()
 
 	go m.waitForStop()
 
@@ -110,6 +119,9 @@ func (m *Mesa) Run() error {
 }
 
 func (m *Mesa) GetServerByType(typ transport.NetType) transport.Server {
+	m.runtimeMu.RLock()
+	defer m.runtimeMu.RUnlock()
+
 	for _, server := range m.opts.Servers {
 		s := server.GetType()
 		if s == typ {
@@ -117,6 +129,67 @@ func (m *Mesa) GetServerByType(typ transport.NetType) transport.Server {
 		}
 	}
 	return nil
+}
+
+func (m *Mesa) RegisterComponent(components ...Component) error {
+	if len(components) == 0 {
+		return nil
+	}
+
+	m.runtimeMu.Lock()
+	defer m.runtimeMu.Unlock()
+	if m.runtimeStarted {
+		return ErrRuntimeStarted
+	}
+
+	for _, component := range components {
+		if component == nil {
+			return errors.New("component is nil")
+		}
+		name := normalizeComponentName(component.Name())
+		if name == "" {
+			return errors.New("component name is empty")
+		}
+		if _, exists := m.componentIndex[name]; exists {
+			return fmt.Errorf("%w: %s", ErrComponentExists, name)
+		}
+		m.components = append(m.components, component)
+		m.componentIndex[name] = component
+	}
+
+	return nil
+}
+
+func (m *Mesa) GetComponent(name string) (Component, bool) {
+	if m == nil {
+		return nil, false
+	}
+
+	m.runtimeMu.RLock()
+	defer m.runtimeMu.RUnlock()
+
+	component, ok := m.componentIndex[normalizeComponentName(name)]
+	return component, ok
+}
+
+func (m *Mesa) MustGetComponent(name string) Component {
+	component, ok := m.GetComponent(name)
+	if ok {
+		return component
+	}
+
+	panic(fmt.Sprintf("%v: %s", ErrComponentNotFound, name))
+}
+
+func (m *Mesa) Components() []Component {
+	if m == nil {
+		return nil
+	}
+
+	m.runtimeMu.RLock()
+	defer m.runtimeMu.RUnlock()
+
+	return append([]Component(nil), m.components...)
 }
 
 func newDB(dsn string) (*bun.DB, error) {
@@ -179,11 +252,18 @@ func (m *Mesa) closeRedis() error {
 	return nil
 }
 
-func (m *Mesa) startServers() {
+func (m *Mesa) startRuntime() {
 	var wg sync.WaitGroup
+
+	m.runtimeMu.Lock()
+	m.runtimeStarted = true
+	servers := append([]transport.Server(nil), m.opts.Servers...)
+	components := append([]Component(nil), m.components...)
+	m.runtimeMu.Unlock()
+
 	m.serversCtx, m.serversCancel = context.WithCancel(context.Background())
 
-	for _, server := range m.opts.Servers {
+	for _, server := range servers {
 		wg.Add(1)
 		go func(s transport.Server) {
 			defer wg.Done()
@@ -194,8 +274,19 @@ func (m *Mesa) startServers() {
 		}(server)
 	}
 
+	for _, component := range components {
+		wg.Add(1)
+		go func(c Component) {
+			defer wg.Done()
+			if err := c.Start(m.serversCtx); err != nil {
+				log.Error("component %s failed to start: %v\n", c.Name(), err)
+				m.serversCancel()
+			}
+		}(component)
+	}
+
 	wg.Wait()
-	log.Info("All servers have started.")
+	log.Info("All servers and components have started.")
 }
 
 func (m *Mesa) waitForStop() {
