@@ -145,3 +145,9 @@ _ = component
 _ = reminderSvc
 ```
 
+### how to usage (main)
+```
+go get github.com/Jinchenyuan/wego@main
+```
+
+example project see: <https://github.com/Jinchenyuan/weserver>
