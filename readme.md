@@ -145,6 +145,33 @@ _ = component
 _ = reminderSvc
 ```
 
+### TCP transport
+
+`transport/tcp` provides a generic TCP server implementation that matches the existing `transport.Server` lifecycle.
+
+```go
+tcpServer := tcp.NewTCPServer(
+	tcp.WithHost(net.ParseIP("0.0.0.0")),
+	tcp.WithPort(9000),
+	tcp.WithHandler(func(ctx context.Context, conn net.Conn) {
+		defer conn.Close()
+
+		buf := make([]byte, 1024)
+		n, err := conn.Read(buf)
+		if err != nil {
+			return
+		}
+
+		_, _ = conn.Write(buf[:n])
+	}),
+)
+
+mesa := wego.New(
+	wego.WithDSN(dsn),
+	wego.WithServers(tcpServer),
+)
+```
+
 ### how to usage (main)
 ```
 go get github.com/Jinchenyuan/wego@main

@@ -32,14 +32,14 @@ func NewMicroServer(opts ...Options) *Service {
 	return ms
 }
 
-func (s *Service) GetServiceClient(service transport.ServiceType) any {
+func (s *Service) GetServiceClient(service string) any {
 	if s.clients == nil {
 		return nil
 	}
-	if _, ok := s.clients[string(service)]; !ok {
+	if _, ok := s.clients[service]; !ok {
 		return nil
 	}
-	return s.clients[string(service)]
+	return s.clients[service]
 }
 
 func (s *Service) NewServiceClients(nsc NewServiceClients) {
