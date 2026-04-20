@@ -145,6 +145,131 @@ _ = component
 _ = reminderSvc
 ```
 
+### Default component configuration
+
+`WithComponents(...)` lets Mesa auto-register built-in components in one place.
+
+```go
+mesa := wego.New(
+	wego.WithDSN(dsn),
+	wego.WithRedisConfig(wego.RedisConfig{
+		Addr: "127.0.0.1:6379",
+	}),
+	wego.WithComponents(wego.ComponentsConfig{
+		Reminder: wego.ReminderComponentConfig{
+			Enabled:  true,
+			Notifier: reminder.NotifierFunc(func(ctx context.Context, r *reminder.Reminder) error {
+				return nil
+			}),
+			PollInterval: 2 * time.Second,
+		},
+		PubSub: wego.PubSubComponentConfig{
+			Enabled:      true,
+			StreamPrefix: "wego:events",
+		},
+	}),
+)
+
+reminderSvc := mesa.MustGetReminder()
+pubsubSvc := mesa.MustGetPubSub()
+
+_ = reminderSvc
+_ = pubsubSvc
+```
+
+### Pub/Sub component
+
+`pubsub` provides a Redis Streams based component for cross-instance publish and subscribe with consumer groups.
+
+### Included capabilities
+
+- Publish messages to a topic backed by Redis Streams
+- Register subscriptions before Mesa runtime starts
+- Competing consumers within one consumer group
+- Fan-out delivery through different consumer groups
+- Retry failed deliveries with configurable backoff
+- Ack on success and dead-letter on max delivery attempts
+
+### Basic usage
+
+```go
+mesa := wego.New(
+	wego.WithDSN(dsn),
+	wego.WithRedisConfig(wego.RedisConfig{
+		Addr: "127.0.0.1:6379",
+	}),
+	wego.WithComponents(wego.ComponentsConfig{
+		PubSub: wego.PubSubComponentConfig{
+			Enabled: true,
+		},
+	}),
+)
+
+pubsubSvc := mesa.MustGetPubSub()
+
+pubsubSvc.MustSubscribe(pubsub.Subscription{
+	Topic: "order.created",
+	Group: "billing",
+	Handler: pubsub.HandlerFunc(func(ctx context.Context, delivery *pubsub.Delivery) error {
+		fmt.Println("received:", delivery.Message.Type, string(delivery.Message.Data))
+		return nil
+	}),
+})
+
+_, err := pubsubSvc.Publish(context.Background(), "order.created", pubsub.Message{
+	Key:  "order-123",
+	Type: "order.created",
+	Data: []byte(`{"id":"123"}`),
+})
+if err != nil {
+	panic(err)
+}
+```
+
+Runtime rules are:
+
+- subscriptions must be registered before `mesa.Run()`
+- handlers must be idempotent because delivery is at least once
+- one `topic + group` maps to one handler within a process
+- use different consumer groups when the same topic needs fan-out
+- handler failures are re-published through an internal retry queue using the configured backoff policy
+- auto-registration only happens when `wego.WithComponents(...)` or `wego.WithPubSub(...)` is provided and Redis is configured
+
+Pub/Sub can also be configured with framework-level fields such as `Name`, `RetryPolicy`, `StreamPrefix`, `StreamMaxLen`, `StreamBlock`, `StreamReadCount`, and dead-letter options through `wego.PubSubComponentConfig`.
+
+### Pub/Sub integration tests
+
+The Redis-backed integration tests for `pubsub` are opt-in and use the `integration` build tag.
+
+Required environment variables:
+
+- `WEGO_REDIS_TEST_ADDR`: Redis address such as `127.0.0.1:6379`
+
+Optional environment variables:
+
+- `WEGO_REDIS_TEST_PASSWORD`: Redis password
+- `WEGO_REDIS_TEST_DB`: Redis database index, defaults to `15`
+
+Run the default unit tests:
+
+```bash
+go test ./pubsub
+```
+
+Run the Redis integration tests:
+
+```bash
+WEGO_REDIS_TEST_ADDR=127.0.0.1:6379 go test -tags=integration ./pubsub
+```
+
+Run the full repository test suite without integration tests:
+
+```bash
+go test ./...
+```
+
+If `WEGO_REDIS_TEST_ADDR` is not set or Redis is unreachable, the integration tests are skipped.
+
 ### TCP transport
 
 `transport/tcp` provides a generic TCP server implementation that matches the existing `transport.Server` lifecycle.

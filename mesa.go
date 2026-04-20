@@ -13,6 +13,8 @@ import (
 	"time"
 
 	"github.com/Jinchenyuan/wego/logger"
+	"github.com/Jinchenyuan/wego/pubsub"
+	"github.com/Jinchenyuan/wego/reminder"
 	"github.com/Jinchenyuan/wego/third_party/etcd"
 	"github.com/Jinchenyuan/wego/transport"
 	"github.com/Jinchenyuan/wego/transport/http"
@@ -29,6 +31,8 @@ import (
 var log *logger.Logger
 
 var ErrRuntimeStarted = errors.New("mesa runtime already started")
+var ErrReminderDBNotConfigured = errors.New("reminder db is not configured")
+var ErrReminderNotifierNotConfigured = errors.New("reminder notifier is not configured")
 
 type Mesa struct {
 	opts           options
@@ -99,6 +103,10 @@ func New(opts ...Options) *Mesa {
 		DB:             db,
 		Redis:          rdb,
 		componentIndex: make(map[string]Component),
+	}
+
+	if err := m.registerDefaultComponents(); err != nil {
+		panic(fmt.Sprintf("failed to register default components: %v", err))
 	}
 
 	SetGlobalMesa(m)
@@ -179,6 +187,22 @@ func (m *Mesa) MustGetComponent(name string) Component {
 	}
 
 	panic(fmt.Sprintf("%v: %s", ErrComponentNotFound, name))
+}
+
+func (m *Mesa) GetPubSub() (*pubsub.Service, bool) {
+	return GetComponentAs[*pubsub.Service](m, "pubsub")
+}
+
+func (m *Mesa) MustGetPubSub() *pubsub.Service {
+	return MustGetComponentAs[*pubsub.Service](m, "pubsub")
+}
+
+func (m *Mesa) GetReminder() (*reminder.Service, bool) {
+	return GetComponentAs[*reminder.Service](m, "reminder")
+}
+
+func (m *Mesa) MustGetReminder() *reminder.Service {
+	return MustGetComponentAs[*reminder.Service](m, "reminder")
 }
 
 func (m *Mesa) Components() []Component {
@@ -317,4 +341,19 @@ func initLogger(opts options) {
 
 	log = GetGlobalLogger()
 
+}
+
+func (m *Mesa) registerDefaultComponents() error {
+	if m == nil {
+		return nil
+	}
+	for _, registrar := range defaultComponentRegistrars {
+		if registrar.enabled == nil || !registrar.enabled(m.opts) {
+			continue
+		}
+		if err := registrar.register(m); err != nil {
+			return fmt.Errorf("register default component %s: %w", registrar.name, err)
+		}
+	}
+	return nil
 }
