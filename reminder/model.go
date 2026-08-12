@@ -38,3 +38,18 @@ type CreateParams struct {
 	ScheduleAt time.Time
 	MaxRetry   int
 }
+
+type ListParams struct {
+	UserID       string
+	Channel      string
+	Statuses     []Status
+	ScheduleFrom time.Time
+	ScheduleTo   time.Time
+	Limit        int
+	Cursor       string
+}
+
+type ListResult struct {
+	Items      []*Reminder
+	NextCursor string
+}

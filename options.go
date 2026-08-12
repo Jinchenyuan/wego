@@ -35,16 +35,15 @@ type PubSubComponentConfig struct {
 }
 
 type ReminderComponentConfig struct {
-	Enabled         bool
-	Notifier        reminder.Notifier
-	Name            string
-	PollInterval    time.Duration
-	BatchSize       int
-	ProcessingTTL   time.Duration
-	AutoCreateTable *bool
-	RetryDelays     []time.Duration
-	Logger          *logger.Logger
-	Options         []reminder.Option
+	Enabled       bool
+	Notifier      reminder.Notifier
+	Name          string
+	PollInterval  time.Duration
+	BatchSize     int
+	ProcessingTTL time.Duration
+	RetryDelays   []time.Duration
+	Logger        *logger.Logger
+	Options       []reminder.Option
 }
 
 type ComponentsConfig struct {
@@ -218,10 +217,6 @@ func mergeReminderComponentConfig(current ReminderComponentConfig, incoming Remi
 	if incoming.ProcessingTTL > 0 {
 		merged.ProcessingTTL = incoming.ProcessingTTL
 	}
-	if incoming.AutoCreateTable != nil {
-		value := *incoming.AutoCreateTable
-		merged.AutoCreateTable = &value
-	}
 	if len(incoming.RetryDelays) > 0 {
 		merged.RetryDelays = append([]time.Duration(nil), incoming.RetryDelays...)
 	}
@@ -299,9 +294,6 @@ func (cfg ReminderComponentConfig) buildOptions() []reminder.Option {
 	}
 	if cfg.ProcessingTTL > 0 {
 		options = append(options, reminder.WithProcessingTTL(cfg.ProcessingTTL))
-	}
-	if cfg.AutoCreateTable != nil {
-		options = append(options, reminder.WithAutoCreateTable(*cfg.AutoCreateTable))
 	}
 	if len(cfg.RetryDelays) > 0 {
 		options = append(options, reminder.WithRetryDelays(cfg.RetryDelays...))

@@ -9,25 +9,23 @@ import (
 type Option func(*options)
 
 type options struct {
-	name            string
-	pollInterval    time.Duration
-	batchSize       int
-	processingTTL   time.Duration
-	autoCreateTable bool
-	logger          *logger.Logger
-	retryDelays     []time.Duration
-	now             func() time.Time
+	name          string
+	pollInterval  time.Duration
+	batchSize     int
+	processingTTL time.Duration
+	logger        *logger.Logger
+	retryDelays   []time.Duration
+	now           func() time.Time
 }
 
 func defaultOptions() options {
 	return options{
-		name:            "reminder",
-		pollInterval:    time.Second,
-		batchSize:       32,
-		processingTTL:   2 * time.Minute,
-		autoCreateTable: true,
-		retryDelays:     []time.Duration{time.Minute, 5 * time.Minute, 30 * time.Minute},
-		now:             time.Now,
+		name:          "reminder",
+		pollInterval:  time.Second,
+		batchSize:     32,
+		processingTTL: 2 * time.Minute,
+		retryDelays:   []time.Duration{time.Minute, 5 * time.Minute, 30 * time.Minute},
+		now:           time.Now,
 	}
 }
 
@@ -60,12 +58,6 @@ func WithProcessingTTL(ttl time.Duration) Option {
 		if ttl > 0 {
 			o.processingTTL = ttl
 		}
-	}
-}
-
-func WithAutoCreateTable(enabled bool) Option {
-	return func(o *options) {
-		o.autoCreateTable = enabled
 	}
 }
 

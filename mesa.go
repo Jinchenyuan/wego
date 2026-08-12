@@ -243,7 +243,14 @@ func (m *Mesa) Liveness() HealthStatus {
 	return HealthStatus{OK: state != StateStopping && state != StateStopped, State: state}
 }
 func (m *Mesa) Readiness(ctx context.Context) HealthStatus {
-	status := HealthStatus{OK: m.State() == StateRunning, State: m.State(), Checks: map[string]HealthCheck{}}
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	checkCtx, cancel := context.WithTimeout(ctx, time.Second)
+	defer cancel()
+	m.runtimeMu.RLock()
+	state, db, rdb, etcdCtl := m.state, m.DB, m.Redis, m.etcdCtl
+	status := HealthStatus{OK: state == StateRunning, State: state, Checks: map[string]HealthCheck{}}
 	check := func(name string, err error) {
 		item := HealthCheck{OK: err == nil}
 		if err != nil {
@@ -252,16 +259,17 @@ func (m *Mesa) Readiness(ctx context.Context) HealthStatus {
 		}
 		status.Checks[name] = item
 	}
-	if m.DB != nil {
-		check("postgres", m.DB.PingContext(ctx))
+	if db != nil {
+		check("postgres", db.PingContext(checkCtx))
 	}
-	if m.Redis != nil {
-		check("redis", m.Redis.Ping(ctx).Err())
+	if rdb != nil {
+		check("redis", rdb.Ping(checkCtx).Err())
 	}
-	if m.etcdCtl != nil {
-		_, err := m.etcdCtl.Get(ctx, "__wego_health__")
+	if etcdCtl != nil {
+		_, err := etcdCtl.Get(checkCtx, "__wego_health__")
 		check("etcd", err)
 	}
+	m.runtimeMu.RUnlock()
 	return status
 }
 
@@ -395,6 +403,12 @@ func (m *Mesa) closeRedis() error {
 	return nil
 }
 func (m *Mesa) closeResources() error {
+	m.runtimeMu.Lock()
+	defer m.runtimeMu.Unlock()
+	return m.closeResourcesLocked()
+}
+
+func (m *Mesa) closeResourcesLocked() error {
 	if m.etcdCtl != nil {
 		m.etcdCtl.Close()
 		m.etcdCtl = nil

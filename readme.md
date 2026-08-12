@@ -47,6 +47,11 @@ svc := reminder.NewService(
 	}),
 )
 
+// Run versioned migrations before starting Mesa (normally in deployment tooling).
+if err := reminder.Migrate(context.Background(), mesa.DB); err != nil {
+	panic(err)
+}
+
 if err := mesa.RegisterComponent(svc); err != nil {
 	panic(err)
 }
@@ -64,6 +69,33 @@ _, err := reminderSvc.Create(context.Background(), reminder.CreateParams{
 	ScheduleAt: time.Now().Add(10 * time.Minute),
 })
 ```
+
+### Querying and state errors
+
+Reminder schema changes are explicit: call `reminder.Migrate(ctx, db)` before the worker starts. `Service.Start` never creates or alters tables.
+
+```go
+item, err := reminderSvc.GetByKey(ctx, "order-123-pay-deadline")
+if errors.Is(err, reminder.ErrNotFound) {
+	// handle a missing reminder
+}
+
+page, err := reminderSvc.List(ctx, reminder.ListParams{
+	UserID:   "42",
+	Statuses: []reminder.Status{reminder.StatusPending},
+	Limit:    50,
+})
+nextPage, err := reminderSvc.List(ctx, reminder.ListParams{
+	UserID: "42",
+	Limit:  50,
+	Cursor: page.NextCursor,
+})
+
+_ = item
+_ = nextPage
+```
+
+`Create` returns `ErrAlreadyExists` for duplicate keys. Cancel and reschedule return `ErrNotFound` for unknown keys and `ErrStateConflict` when the current state does not allow the operation. Canceling an already canceled reminder succeeds.
 
 ### Dispatcher notifier
 
@@ -281,6 +313,14 @@ go test ./...
 ```
 
 If `WEGO_REDIS_TEST_ADDR` is not set or Redis is unreachable, the integration tests are skipped.
+
+### Reminder integration tests
+
+PostgreSQL-backed Reminder tests are opt-in. Each test creates and removes an isolated schema and applies the production migration.
+
+```bash
+WEGO_POSTGRES_TEST_DSN='postgres://user:password@127.0.0.1:5432/land_contract?sslmode=disable' go test -tags=integration ./reminder
+```
 
 ### TCP transport
 

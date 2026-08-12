@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/Jinchenyuan/wego/logger"
@@ -15,6 +16,10 @@ type Service struct {
 	store    *Store
 	notifier Notifier
 	opts     options
+	mu       sync.Mutex
+	cancel   context.CancelFunc
+	done     chan struct{}
+	started  bool
 }
 
 func NewService(db *bun.DB, notifier Notifier, opts ...Option) *Service {
@@ -44,21 +49,39 @@ func (s *Service) Start(ctx context.Context) error {
 	if s.notifier == nil {
 		return errors.New("reminder notifier is not configured")
 	}
-	if s.opts.autoCreateTable {
-		if err := s.store.EnsureSchema(ctx); err != nil {
-			return err
-		}
+	s.mu.Lock()
+	if s.started {
+		s.mu.Unlock()
+		return errors.New("reminder service already started")
 	}
+	s.started = true
+	s.mu.Unlock()
 	if err := s.recoverStaleProcessing(ctx); err != nil {
+		s.mu.Lock()
+		s.started = false
+		s.mu.Unlock()
 		return err
 	}
-
-	go s.loop(ctx)
+	s.mu.Lock()
+	workerCtx, cancel := context.WithCancel(ctx)
+	s.cancel = cancel
+	s.done = make(chan struct{})
+	done := s.done
+	s.mu.Unlock()
+	go func() { defer close(done); s.loop(workerCtx) }()
 	return nil
 }
 
 func (s *Service) Create(ctx context.Context, params CreateParams) (*Reminder, error) {
 	return s.store.Create(ctx, params)
+}
+
+func (s *Service) GetByKey(ctx context.Context, key string) (*Reminder, error) {
+	return s.store.GetByKey(ctx, key)
+}
+
+func (s *Service) List(ctx context.Context, params ListParams) (*ListResult, error) {
+	return s.store.List(ctx, params)
 }
 
 func (s *Service) CancelByKey(ctx context.Context, key string) error {
@@ -69,8 +92,24 @@ func (s *Service) RescheduleByKey(ctx context.Context, key string, scheduleAt ti
 	return s.store.RescheduleByKey(ctx, key, scheduleAt)
 }
 
-func (s *Service) EnsureSchema(ctx context.Context) error {
-	return s.store.EnsureSchema(ctx)
+func (s *Service) Migrate(ctx context.Context) error {
+	return s.store.Migrate(ctx)
+}
+
+func (s *Service) Stop(ctx context.Context) error {
+	s.mu.Lock()
+	cancel, done := s.cancel, s.done
+	s.mu.Unlock()
+	if cancel == nil || done == nil {
+		return nil
+	}
+	cancel()
+	select {
+	case <-done:
+		return nil
+	case <-ctx.Done():
+		return ctx.Err()
+	}
 }
 
 func (s *Service) loop(ctx context.Context) {
@@ -99,13 +138,14 @@ func (s *Service) processBatch(ctx context.Context) error {
 		return err
 	}
 
+	var result error
 	for _, item := range reminders {
 		if err := s.dispatch(ctx, item); err != nil {
-			return err
+			result = errors.Join(result, fmt.Errorf("dispatch reminder %s: %w", item.Key, err))
+			s.opts.logger.Error("reminder dispatch failed:", item.Key, err)
 		}
 	}
-
-	return nil
+	return result
 }
 
 func (s *Service) dispatch(ctx context.Context, item *Reminder) error {

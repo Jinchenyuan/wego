@@ -22,11 +22,22 @@ type lifecycleServer struct {
 	startErr error
 	started  atomic.Bool
 	stopped  atomic.Int32
+	stopWait <-chan struct{}
 }
 
 func (s *lifecycleServer) Start(context.Context) error { s.started.Store(true); return s.startErr }
-func (s *lifecycleServer) Stop(context.Context) error  { s.stopped.Add(1); return nil }
-func (s *lifecycleServer) GetType() transport.NetType  { return transport.TCP }
+func (s *lifecycleServer) Stop(ctx context.Context) error {
+	s.stopped.Add(1)
+	if s.stopWait != nil {
+		select {
+		case <-s.stopWait:
+		case <-ctx.Done():
+			return ctx.Err()
+		}
+	}
+	return nil
+}
+func (s *lifecycleServer) GetType() transport.NetType { return transport.TCP }
 
 type testComponent struct {
 	started atomic.Bool
@@ -362,5 +373,39 @@ func TestHealthRoutesBeforeRun(t *testing.T) {
 	srv.GetEngine().ServeHTTP(ready, httptest.NewRequest(http.MethodGet, "/readyz", nil))
 	if ready.Code != http.StatusServiceUnavailable {
 		t.Fatalf("ready status = %d", ready.Code)
+	}
+}
+
+func TestShutdownHonorsDeadline(t *testing.T) {
+	blocked := make(chan struct{})
+	m, err := New(WithServers(&lifecycleServer{stopWait: blocked}))
+	if err != nil {
+		t.Fatalf("New: %v", err)
+	}
+	m.state = StateRunning
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Millisecond)
+	defer cancel()
+	if err := m.Shutdown(ctx); !errors.Is(err, context.DeadlineExceeded) {
+		t.Fatalf("Shutdown error = %v", err)
+	}
+}
+
+func TestConcurrentShutdownIsIdempotent(t *testing.T) {
+	srv := &lifecycleServer{}
+	m, err := New(WithServers(srv))
+	if err != nil {
+		t.Fatalf("New: %v", err)
+	}
+	m.state = StateRunning
+	errs := make(chan error, 2)
+	go func() { errs <- m.Shutdown(context.Background()) }()
+	go func() { errs <- m.Shutdown(context.Background()) }()
+	for i := 0; i < 2; i++ {
+		if err := <-errs; err != nil {
+			t.Fatalf("Shutdown: %v", err)
+		}
+	}
+	if got := srv.stopped.Load(); got != 1 {
+		t.Fatalf("Stop calls = %d", got)
 	}
 }
