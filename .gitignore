@@ -66,3 +66,5 @@ redis-data
 
 # traefik
 dynamic.yml
+
+AGENTS.md

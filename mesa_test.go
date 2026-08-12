@@ -3,15 +3,30 @@ package wego
 import (
 	"context"
 	"errors"
+	"fmt"
+	"net/http"
+	"net/http/httptest"
 	"sync/atomic"
 	"testing"
 	"time"
 
 	"github.com/Jinchenyuan/wego/pubsub"
 	"github.com/Jinchenyuan/wego/reminder"
+	"github.com/Jinchenyuan/wego/transport"
+	httptransport "github.com/Jinchenyuan/wego/transport/http"
 	redis "github.com/redis/go-redis/v9"
 	"github.com/uptrace/bun"
 )
+
+type lifecycleServer struct {
+	startErr error
+	started  atomic.Bool
+	stopped  atomic.Int32
+}
+
+func (s *lifecycleServer) Start(context.Context) error { s.started.Store(true); return s.startErr }
+func (s *lifecycleServer) Stop(context.Context) error  { s.stopped.Add(1); return nil }
+func (s *lifecycleServer) GetType() transport.NetType  { return transport.TCP }
 
 type testComponent struct {
 	started atomic.Bool
@@ -43,7 +58,7 @@ func TestRegisterComponent(t *testing.T) {
 }
 
 func TestRegisterComponentAfterRuntimeStarted(t *testing.T) {
-	mesa := &Mesa{runtimeStarted: true, componentIndex: make(map[string]Component)}
+	mesa := &Mesa{state: StateRunning, componentIndex: make(map[string]Component)}
 
 	err := mesa.RegisterComponent(&testComponent{})
 	if err == nil {
@@ -267,5 +282,85 @@ func TestDefaultComponentRegistrarsIncludeBuiltins(t *testing.T) {
 	}
 	if !foundReminder {
 		t.Fatalf("expected reminder registrar to be present")
+	}
+}
+
+func TestNewWithoutInfrastructure(t *testing.T) {
+	m, err := New()
+	if err != nil {
+		t.Fatalf("New: %v", err)
+	}
+	if m.DB != nil || m.Redis != nil || m.etcdCtl != nil {
+		t.Fatal("expected no infrastructure clients")
+	}
+	if got := m.State(); got != StateNew {
+		t.Fatalf("state = %q", got)
+	}
+	if err := m.Shutdown(context.Background()); err != nil {
+		t.Fatalf("Shutdown: %v", err)
+	}
+}
+
+func TestRunStopsOnContextCancellation(t *testing.T) {
+	srv := &lifecycleServer{}
+	m, err := New(WithServers(srv))
+	if err != nil {
+		t.Fatalf("New: %v", err)
+	}
+	ctx, cancel := context.WithCancel(context.Background())
+	done := make(chan error, 1)
+	go func() { done <- m.Run(ctx) }()
+	for deadline := time.Now().Add(time.Second); m.State() != StateRunning && time.Now().Before(deadline); {
+		time.Sleep(time.Millisecond)
+	}
+	cancel()
+	if err := <-done; err != nil {
+		t.Fatalf("Run: %v", err)
+	}
+	if got := srv.stopped.Load(); got != 1 {
+		t.Fatalf("Stop calls = %d", got)
+	}
+	if got := m.State(); got != StateStopped {
+		t.Fatalf("state = %q", got)
+	}
+}
+
+func TestRunRollsBackStartedServers(t *testing.T) {
+	started := &lifecycleServer{}
+	failing := &lifecycleServer{startErr: fmt.Errorf("bind failed")}
+	m, err := New(WithServers(started, failing))
+	if err != nil {
+		t.Fatalf("New: %v", err)
+	}
+	err = m.Run(context.Background())
+	if err == nil {
+		t.Fatal("expected startup error")
+	}
+	if got := started.stopped.Load(); got != 1 {
+		t.Fatalf("rollback Stop calls = %d", got)
+	}
+	if got := m.State(); got != StateStopped {
+		t.Fatalf("state = %q", got)
+	}
+}
+
+func TestHealthRoutesBeforeRun(t *testing.T) {
+	m, err := New(WithHttpPort(8080))
+	if err != nil {
+		t.Fatalf("New: %v", err)
+	}
+	t.Cleanup(func() { _ = m.Shutdown(context.Background()) })
+	srv := m.GetServerByType(transport.HTTP).(*httptransport.Server)
+
+	live := httptest.NewRecorder()
+	srv.GetEngine().ServeHTTP(live, httptest.NewRequest(http.MethodGet, "/livez", nil))
+	if live.Code != http.StatusOK {
+		t.Fatalf("live status = %d", live.Code)
+	}
+
+	ready := httptest.NewRecorder()
+	srv.GetEngine().ServeHTTP(ready, httptest.NewRequest(http.MethodGet, "/readyz", nil))
+	if ready.Code != http.StatusServiceUnavailable {
+		t.Fatalf("ready status = %d", ready.Code)
 	}
 }

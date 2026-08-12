@@ -2,7 +2,6 @@ package micro
 
 import (
 	"errors"
-	"fmt"
 	"hash/fnv"
 	"sync"
 	"time"
@@ -77,7 +76,6 @@ func (c *idSelector) Select(service string, opts ...selector.SelectOption) (sele
 	if sopts.Context != nil {
 		if m, ok := metadata.FromContext(sopts.Context); ok {
 			md = m
-			fmt.Printf("metadata: %+v\n", md)
 		}
 	}
 
@@ -94,11 +92,6 @@ func (c *idSelector) Select(service string, opts ...selector.SelectOption) (sele
 	var nodes []*registry.Node
 	for _, svc := range services {
 		nodes = append(nodes, svc.Nodes...)
-	}
-
-	for _, n := range nodes {
-		// print node id
-		fmt.Printf("node id: %s\n", n.Id)
 	}
 
 	if key := firstNonEmpty(md["uid"], md["Uid"], md["user-id"], md["x-uid"]); key != "" && len(nodes) > 0 {

@@ -93,6 +93,11 @@ func (s *Server) Start(ctx context.Context) error {
 	return nil
 }
 
+func (s *Server) Stop(context.Context) error {
+	s.shutdown()
+	return nil
+}
+
 func (s *Server) listenAddr() string {
 	host := "0.0.0.0"
 	if len(s.opts.Host) > 0 {

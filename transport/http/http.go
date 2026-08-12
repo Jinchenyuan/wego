@@ -2,9 +2,11 @@ package http
 
 import (
 	"context"
+	"errors"
 	"fmt"
-	"log"
+	"net"
 	"net/http"
+	"sync"
 
 	"github.com/Jinchenyuan/wego/transport"
 	"github.com/gin-gonic/gin"
@@ -12,8 +14,10 @@ import (
 
 type Server struct {
 	*http.Server
-	auth gin.HandlerFunc
-	opts options
+	auth     gin.HandlerFunc
+	opts     options
+	mu       sync.Mutex
+	listener net.Listener
 }
 
 func NewHTTPServer(opts ...Options) *Server {
@@ -51,8 +55,6 @@ func (s *Server) RegisterRoute(method string, path string, handler gin.HandlerFu
 		r.PUT(path, s.auth, handler)
 	case http.MethodDelete:
 		r.DELETE(path, s.auth, handler)
-	default:
-		log.Printf("unsupported method %s for path %s\n", method, path)
 	}
 }
 
@@ -65,20 +67,31 @@ func (s *Server) GetType() transport.NetType {
 }
 
 func (s *Server) Start(ctx context.Context) error {
+	listener, err := net.Listen("tcp", s.Addr)
+	if err != nil {
+		return err
+	}
+	s.mu.Lock()
+	s.listener = listener
+	s.mu.Unlock()
 	go func() {
-		<-ctx.Done()
-		if err := s.Shutdown(context.Background()); err != nil {
-			log.Printf("http server shutdown failed:%s\n", err)
-		} else {
-			log.Printf("http server shutdown success\n")
-		}
+		_ = s.Serve(listener)
 	}()
-
-	go func() {
-		if err := s.ListenAndServe(); err != nil && err != http.ErrServerClosed {
-			log.Fatalf("listen %s\n", err)
-		}
-	}()
-
+	go func() { <-ctx.Done(); _ = s.Stop(context.Background()) }()
 	return nil
+}
+
+func (s *Server) Stop(ctx context.Context) error {
+	s.mu.Lock()
+	listener := s.listener
+	s.listener = nil
+	s.mu.Unlock()
+	if listener == nil {
+		return nil
+	}
+	err := s.Shutdown(ctx)
+	if errors.Is(err, http.ErrServerClosed) {
+		return nil
+	}
+	return err
 }

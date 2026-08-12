@@ -32,9 +32,12 @@ The framework now includes a minimal reminder worker built on PostgreSQL and the
 ### Basic usage
 
 ```go
-mesa := wego.New(
+mesa, err := wego.New(
 	wego.WithDSN(dsn),
 )
+if err != nil {
+	panic(err)
+}
 
 svc := reminder.NewService(
 	mesa.DB,
@@ -89,9 +92,12 @@ _ = dispatcher.SetFallback(reminder.NotifierFunc(func(ctx context.Context, r *re
 	return nil
 }))
 
-mesa := wego.New(
+mesa, err := wego.New(
 	wego.WithDSN(dsn),
 )
+if err != nil {
+	panic(err)
+}
 
 svc := reminder.NewService(mesa.DB, dispatcher)
 
@@ -150,7 +156,7 @@ _ = reminderSvc
 `WithComponents(...)` lets Mesa auto-register built-in components in one place.
 
 ```go
-mesa := wego.New(
+mesa, err := wego.New(
 	wego.WithDSN(dsn),
 	wego.WithRedisConfig(wego.RedisConfig{
 		Addr: "127.0.0.1:6379",
@@ -169,6 +175,9 @@ mesa := wego.New(
 		},
 	}),
 )
+if err != nil {
+	panic(err)
+}
 
 reminderSvc := mesa.MustGetReminder()
 pubsubSvc := mesa.MustGetPubSub()
@@ -193,7 +202,7 @@ _ = pubsubSvc
 ### Basic usage
 
 ```go
-mesa := wego.New(
+mesa, err := wego.New(
 	wego.WithDSN(dsn),
 	wego.WithRedisConfig(wego.RedisConfig{
 		Addr: "127.0.0.1:6379",
@@ -204,6 +213,9 @@ mesa := wego.New(
 		},
 	}),
 )
+if err != nil {
+	panic(err)
+}
 
 pubsubSvc := mesa.MustGetPubSub()
 
@@ -228,7 +240,7 @@ if err != nil {
 
 Runtime rules are:
 
-- subscriptions must be registered before `mesa.Run()`
+- subscriptions must be registered before `mesa.Run(ctx)`
 - handlers must be idempotent because delivery is at least once
 - one `topic + group` maps to one handler within a process
 - use different consumer groups when the same topic needs fan-out
@@ -291,15 +303,35 @@ tcpServer := tcp.NewTCPServer(
 	}),
 )
 
-mesa := wego.New(
+mesa, err := wego.New(
 	wego.WithDSN(dsn),
 	wego.WithServers(tcpServer),
 )
+if err != nil {
+	panic(err)
+}
 ```
 
 ### Installation (main)
 ```
 go get github.com/Jinchenyuan/wego@main
+```
+
+### Runtime and health checks
+
+`New` only initializes configured dependencies and returns connection or configuration errors. `Run` accepts a context, and `Shutdown` is safe to call more than once.
+
+When the default HTTP server is enabled with `WithHttpPort`, it exposes `GET /livez` and `GET /readyz`. The same status is available through `mesa.Liveness()` and `mesa.Readiness(ctx)`.
+
+```go
+mesa, err := wego.New(wego.WithHttpPort(8080))
+if err != nil {
+	return err
+}
+
+ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt)
+defer stop()
+return mesa.Run(ctx)
 ```
 
 ### Usage
@@ -321,7 +353,7 @@ if err != nil {
 	fmt.Printf("failed to read config: %v\n", err)
 	return
 }
-m := wego.New(
+m, err := wego.New(
 	wego.WithEtcdConfig(clientv3.Config{
 		Endpoints:   cfg.Etcd.Endpoints,
 		DialTimeout: 5 * time.Second,
@@ -340,6 +372,10 @@ m := wego.New(
 		Name: cfg.Profile.Name,
 	}),
 )
+if err != nil {
+	fmt.Printf("failed to initialize mesa: %v\n", err)
+	return
+}
 
 ginhandler.SetAuthMiddleware(middleware.AuthMiddleware("account", func(id string) string {
 	cacheToken, err := m.Redis.Get(context.Background(), fmt.Sprintf("token:%s", id)).Result()
@@ -354,7 +390,7 @@ ginhandler.Registry()
 ms := m.GetServerByType(transport.MICRO_SERVER).(*micro.Service)
 ms.NewServiceClients(serviceclient.Registry)
 
-if err := m.Run(); err != nil {
+if err := m.Run(context.Background()); err != nil {
 	fmt.Printf("failed to run mesa: %v\n", err)
 }
 ```

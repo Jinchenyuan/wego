@@ -2,7 +2,6 @@ package etcd
 
 import (
 	"context"
-	"fmt"
 	"time"
 
 	clientv3 "go.etcd.io/etcd/client/v3"
@@ -27,17 +26,16 @@ func NewCtl(cfg ClientConfig, opts ...ClientOption) (*Ctl, error) {
 		opt(ctl)
 	}
 
-	if ctl.authConfig.Empty() {
-		return nil, fmt.Errorf("etcd auth config is empty")
-	}
-
-	client, err := clientv3.New(clientv3.Config{
+	clientConfig := clientv3.Config{
 		Endpoints:   ctl.endpoints,
 		DialTimeout: 5 * time.Second,
 		DialOptions: []grpc.DialOption{grpc.WithBlock()},
-		Username:    ctl.authConfig.Username,
-		Password:    ctl.authConfig.Password,
-	})
+	}
+	if !ctl.authConfig.Empty() {
+		clientConfig.Username = ctl.authConfig.Username
+		clientConfig.Password = ctl.authConfig.Password
+	}
+	client, err := clientv3.New(clientConfig)
 	if err != nil {
 		return nil, err
 	}
