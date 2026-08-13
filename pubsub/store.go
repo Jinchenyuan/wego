@@ -18,9 +18,10 @@ type Store struct {
 
 type retryEnvelope struct {
 	Topic       string            `json:"topic"`
+	Group       string            `json:"group"`
 	Key         string            `json:"key"`
 	Type        string            `json:"type"`
-	Data        []byte            `json:"data"`
+	Data        string            `json:"data"`
 	Headers     map[string]string `json:"headers"`
 	MaxDeliver  int               `json:"max_deliver"`
 	Attempt     int               `json:"attempt"`
@@ -146,11 +147,15 @@ func (s *Store) MoveToDLQ(ctx context.Context, topic string, delivery *Delivery,
 		fieldPublishedAt: delivery.PublishedAt.UTC().Format(time.RFC3339Nano),
 		fieldMaxDeliver:  delivery.Message.MaxDeliver,
 		fieldAttempt:     delivery.Attempt,
-		"reason":        reason,
-		"source_id":     delivery.ID,
-		"source_group":  delivery.Group,
+		"reason":         reason,
+		"source_id":      delivery.ID,
+		"source_group":   delivery.Group,
 	}
-	return s.rdb.XAdd(ctx, &redis.XAddArgs{Stream: s.dlqKey(topic), ID: "*", Values: values}).Result()
+	args := []any{s.dlqKey(topic), s.streamKey(topic), delivery.Group, delivery.ID}
+	for key, value := range values {
+		args = append(args, key, value)
+	}
+	return dlqAndAckScript.Run(ctx, s.rdb, nil, args...).Text()
 }
 
 func (s *Store) ScheduleRetry(ctx context.Context, topic string, delivery *Delivery, dueAt time.Time, nextAttempt int) error {
@@ -162,9 +167,10 @@ func (s *Store) ScheduleRetry(ctx context.Context, topic string, delivery *Deliv
 	}
 	payload, err := json.Marshal(retryEnvelope{
 		Topic:       normalizeTopic(topic),
+		Group:       normalizeGroup(delivery.Group),
 		Key:         delivery.Message.Key,
 		Type:        delivery.Message.Type,
-		Data:        delivery.Message.Data,
+		Data:        string(delivery.Message.Data),
 		Headers:     delivery.Message.Headers,
 		MaxDeliver:  delivery.Message.MaxDeliver,
 		Attempt:     nextAttempt,
@@ -173,42 +179,31 @@ func (s *Store) ScheduleRetry(ctx context.Context, topic string, delivery *Deliv
 	if err != nil {
 		return err
 	}
-	return s.rdb.ZAdd(ctx, s.retryKey(topic), redis.Z{
-		Score:  float64(dueAt.UnixMilli()),
-		Member: string(payload),
-	}).Err()
+	return retryAndAckScript.Run(ctx, s.rdb, []string{s.retryKey(topic, delivery.Group), s.streamKey(topic)}, dueAt.UnixMilli(), string(payload), delivery.Group, delivery.ID).Err()
 }
 
-func (s *Store) ClaimDueRetries(ctx context.Context, topic string, limit int64, now time.Time) ([]retryEnvelope, error) {
+func (s *Store) PromoteDueRetries(ctx context.Context, topic string, group string, limit int64, now time.Time) (int64, error) {
 	if s == nil || s.rdb == nil {
-		return nil, ErrRedisNotConfigured
+		return 0, ErrRedisNotConfigured
 	}
 	if limit <= 0 {
 		limit = 1
 	}
-	results, err := retryClaimScript.Run(ctx, s.rdb, []string{s.retryKey(topic)}, now.UnixMilli(), limit).StringSlice()
+	result, err := retryPromoteScript.Run(ctx, s.rdb, []string{s.retryKey(topic, group), s.streamKey(topic)}, now.UnixMilli(), limit).Int64()
 	if err != nil {
 		if errors.Is(err, redis.Nil) {
-			return nil, nil
+			return 0, nil
 		}
-		return nil, err
+		return 0, err
 	}
-	items := make([]retryEnvelope, 0, len(results))
-	for _, item := range results {
-		var envelope retryEnvelope
-		if err := json.Unmarshal([]byte(item), &envelope); err != nil {
-			continue
-		}
-		items = append(items, envelope)
-	}
-	return items, nil
+	return result, nil
 }
 
 func (s *Store) PublishRetry(ctx context.Context, envelope retryEnvelope) (string, error) {
 	message := Message{
 		Key:        envelope.Key,
 		Type:       envelope.Type,
-		Data:       envelope.Data,
+		Data:       []byte(envelope.Data),
 		Headers:    envelope.Headers,
 		MaxDeliver: envelope.MaxDeliver,
 	}
@@ -223,8 +218,8 @@ func (s *Store) dlqKey(topic string) string {
 	return s.streamKey(topic) + s.opts.dlq.Suffix
 }
 
-func (s *Store) retryKey(topic string) string {
-	return s.streamKey(topic) + ":retry"
+func (s *Store) retryKey(topic string, group string) string {
+	return s.streamKey(topic) + ":retry:" + normalizeGroup(group)
 }
 
 func flattenEntries(streams []redis.XStream) []Entry {
@@ -279,10 +274,33 @@ func (s *Store) pendingRetryCount(ctx context.Context, topic string, group strin
 	return items[0].RetryCount, nil
 }
 
-var retryClaimScript = redis.NewScript(`
+var retryAndAckScript = redis.NewScript(`
+redis.call("ZADD", KEYS[1], ARGV[1], ARGV[2])
+return redis.call("XACK", KEYS[2], ARGV[3], ARGV[4])
+`)
+
+var dlqAndAckScript = redis.NewScript(`
+local id = redis.call("XADD", ARGV[1], "*", unpack(ARGV, 5))
+redis.call("XACK", ARGV[2], ARGV[3], ARGV[4])
+return id
+`)
+
+var retryPromoteScript = redis.NewScript(`
 local items = redis.call("ZRANGEBYSCORE", KEYS[1], "-inf", ARGV[1], "LIMIT", 0, ARGV[2])
-if #items > 0 then
-  redis.call("ZREM", KEYS[1], unpack(items))
+local promoted = 0
+for _, raw in ipairs(items) do
+  local item = cjson.decode(raw)
+  local headers = cjson.encode(item.headers or {})
+  redis.call("XADD", KEYS[2], "*",
+    "key", item.key or "",
+    "type", item.type or "",
+    "data", item.data or "",
+    "headers", headers,
+    "published_at", item.published_at,
+    "max_deliver", item.max_deliver,
+    "attempt", item.attempt)
+  redis.call("ZREM", KEYS[1], raw)
+  promoted = promoted + 1
 end
-return items
+return promoted
 `)

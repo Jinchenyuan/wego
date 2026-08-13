@@ -29,3 +29,14 @@ func TestTimeoutOverrides(t *testing.T) {
 		t.Fatal("timeout overrides not applied")
 	}
 }
+
+func TestRegisterRouteWithoutAuth(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	s := NewHTTPServer()
+	s.RegisterRoute(http.MethodGet, "/public", func(c *gin.Context) { c.Status(http.StatusNoContent) })
+	w := httptest.NewRecorder()
+	s.Handler.ServeHTTP(w, httptest.NewRequest(http.MethodGet, "/public", nil))
+	if w.Code != http.StatusNoContent {
+		t.Fatalf("status = %d, want %d", w.Code, http.StatusNoContent)
+	}
+}

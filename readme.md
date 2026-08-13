@@ -277,6 +277,7 @@ Runtime rules are:
 - one `topic + group` maps to one handler within a process
 - use different consumer groups when the same topic needs fan-out
 - handler failures are re-published through an internal retry queue using the configured backoff policy
+- retry queues are isolated by `topic + group`; scheduling a retry and acknowledging the source entry are atomic on Redis
 - auto-registration only happens when `wego.WithComponents(...)` or `wego.WithPubSub(...)` is provided and Redis is configured
 
 Pub/Sub can also be configured with framework-level fields such as `Name`, `RetryPolicy`, `StreamPrefix`, `StreamMaxLen`, `StreamBlock`, `StreamReadCount`, and dead-letter options through `wego.PubSubComponentConfig`.
@@ -373,6 +374,35 @@ ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt)
 defer stop()
 return mesa.Run(ctx)
 ```
+
+### Validated configuration
+
+`wego.Config` is the typed production configuration surface. Applications remain
+responsible for loading environment variables, files, and secrets, then call
+`Validate` or `Options` before creating Mesa:
+
+```go
+cfg := wego.Config{
+	Profile: wego.Profile{Name: "orders"},
+	HTTP:    wego.HTTPConfig{Port: 8080},
+	Redis:   wego.RedisConfig{Addr: "127.0.0.1:6379"},
+}
+opts, err := cfg.Options()
+if err != nil {
+	return err
+}
+mesa, err := wego.New(opts...)
+```
+
+Configuration errors include the invalid field path and may be inspected with
+`errors.As(err, *wego.ConfigError)`.
+
+### Pluggable authentication
+
+`middleware.Authenticate` accepts a context-aware `Authenticator`. Successful
+authentication stores a `Principal` in the request context for handlers to read
+with `middleware.PrincipalFromContext`. The existing `AuthMiddleware` remains
+available for header ID plus cached-token schemes.
 
 ### Production baseline
 

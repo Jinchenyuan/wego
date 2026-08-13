@@ -107,7 +107,7 @@ func TestServiceRetryToDLQIntegration(t *testing.T) {
 	}
 
 	waitFor(t, time.Second, func() bool {
-		length, err := rdb.ZCard(ctx, svc.store.retryKey("payments.failed")).Result()
+		length, err := rdb.ZCard(ctx, svc.store.retryKey("payments.failed", "notifier")).Result()
 		return err == nil && length == 1
 	})
 
@@ -129,6 +129,48 @@ func TestServiceRetryToDLQIntegration(t *testing.T) {
 	}
 	if msgs[0].Values["reason"] != "max delivery exceeded" {
 		t.Fatalf("expected DLQ reason max delivery exceeded, got %v", msgs[0].Values["reason"])
+	}
+}
+
+func TestRetryQueuesAreIsolatedByGroupIntegration(t *testing.T) {
+	rdb := newIntegrationRedisClient(t)
+	ctx := context.Background()
+	store := NewStore(rdb, testOptions("wego:test:pubsub:groups:"+strconv.FormatInt(time.Now().UnixNano(), 10)))
+	topic := "orders.created"
+	delivery := func(group string, id string) *Delivery {
+		return &Delivery{
+			ID: id, Topic: topic, Group: group, Attempt: 1, PublishedAt: time.Now().UTC(),
+			Message: Message{Type: "order.created", Data: []byte(`{"id":"1"}`), MaxDeliver: 3},
+		}
+	}
+	for _, group := range []string{"billing", "analytics"} {
+		if err := store.EnsureGroup(ctx, topic, group); err != nil {
+			t.Fatal(err)
+		}
+		id, err := store.Publish(ctx, topic, delivery(group, "").Message)
+		if err != nil {
+			t.Fatal(err)
+		}
+		entries, err := store.ReadGroup(ctx, Subscription{Topic: topic, Group: group}, group+"-1")
+		if err != nil || len(entries) == 0 {
+			t.Fatalf("read group %s: entries=%d err=%v", group, len(entries), err)
+		}
+		item := delivery(group, id)
+		item.ID = entries[0].ID
+		if err := store.ScheduleRetry(ctx, topic, item, time.Now().Add(time.Minute), 2); err != nil {
+			t.Fatalf("schedule group %s: %v", group, err)
+		}
+	}
+	billing, err := rdb.ZCard(ctx, store.retryKey(topic, "billing")).Result()
+	if err != nil {
+		t.Fatal(err)
+	}
+	analytics, err := rdb.ZCard(ctx, store.retryKey(topic, "analytics")).Result()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if billing != 1 || analytics != 1 {
+		t.Fatalf("retry queues not isolated: billing=%d analytics=%d", billing, analytics)
 	}
 }
 

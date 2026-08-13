@@ -157,30 +157,13 @@ func (s *Service) retryLoop(ctx context.Context, sub Subscription) {
 		case <-ctx.Done():
 			return
 		case <-ticker.C:
-			items, err := s.store.ClaimDueRetries(ctx, sub.Topic, s.opts.stream.ReadCount, s.opts.now())
+			_, err := s.store.PromoteDueRetries(ctx, sub.Topic, sub.Group, s.opts.stream.ReadCount, s.opts.now())
 			if err != nil {
 				if errors.Is(err, context.Canceled) {
 					return
 				}
 				s.opts.logger.Error("pubsub retry claim failed:", err)
 				continue
-			}
-			for _, item := range items {
-				if _, err := s.store.PublishRetry(ctx, item); err != nil {
-					_ = s.store.ScheduleRetry(ctx, item.Topic, &Delivery{
-						Topic: item.Topic,
-						Message: Message{
-							Key:        item.Key,
-							Type:       item.Type,
-							Data:       item.Data,
-							Headers:    item.Headers,
-							MaxDeliver: item.MaxDeliver,
-						},
-						Attempt:     item.Attempt,
-						PublishedAt: item.PublishedAt,
-					}, s.opts.now().Add(time.Second), item.Attempt)
-					s.opts.logger.Error("pubsub retry publish failed:", err)
-				}
 			}
 		}
 	}
@@ -199,8 +182,9 @@ func (s *Service) handleEntry(ctx context.Context, sub Subscription, consumer st
 		delivery.Message.MaxDeliver = retry.MaxDeliver
 	}
 	if delivery.Attempt > delivery.Message.MaxDeliver && s.opts.dlq.Enabled {
-		_, _ = s.store.MoveToDLQ(ctx, sub.Topic, delivery, "max delivery exceeded")
-		_ = s.store.Ack(ctx, sub.Topic, sub.Group, delivery.ID)
+		if _, err := s.store.MoveToDLQ(ctx, sub.Topic, delivery, "max delivery exceeded"); err != nil {
+			s.opts.logger.Error("pubsub DLQ move failed:", err)
+		}
 		return
 	}
 
@@ -209,7 +193,10 @@ func (s *Service) handleEntry(ctx context.Context, sub Subscription, consumer st
 		nextAttempt := delivery.Attempt + 1
 		if nextAttempt > delivery.Message.MaxDeliver {
 			if s.opts.dlq.Enabled {
-				_, _ = s.store.MoveToDLQ(ctx, sub.Topic, delivery, "max delivery exceeded")
+				if _, err := s.store.MoveToDLQ(ctx, sub.Topic, delivery, "max delivery exceeded"); err != nil {
+					s.opts.logger.Error("pubsub DLQ move failed:", err)
+				}
+				return
 			}
 			_ = s.store.Ack(ctx, sub.Topic, sub.Group, delivery.ID)
 			return
@@ -219,9 +206,6 @@ func (s *Service) handleEntry(ctx context.Context, sub Subscription, consumer st
 		if err := s.store.ScheduleRetry(ctx, sub.Topic, delivery, s.opts.now().Add(delay), nextAttempt); err != nil {
 			s.opts.logger.Error("pubsub retry scheduling failed:", err)
 			return
-		}
-		if err := s.store.Ack(ctx, sub.Topic, sub.Group, delivery.ID); err != nil {
-			s.opts.logger.Error("pubsub ack after retry scheduling failed:", err)
 		}
 		return
 	}

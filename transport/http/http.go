@@ -99,15 +99,19 @@ func (s *Server) SetAuthMiddleware(auth gin.HandlerFunc) {
 
 func (s *Server) RegisterRoute(method string, path string, handler gin.HandlerFunc) {
 	r := s.Handler.(*gin.Engine)
+	handlers := []gin.HandlerFunc{handler}
+	if s.auth != nil {
+		handlers = append([]gin.HandlerFunc{s.auth}, handlers...)
+	}
 	switch method {
 	case http.MethodGet:
-		r.GET(path, s.auth, handler)
+		r.GET(path, handlers...)
 	case http.MethodPost:
-		r.POST(path, s.auth, handler)
+		r.POST(path, handlers...)
 	case http.MethodPut:
-		r.PUT(path, s.auth, handler)
+		r.PUT(path, handlers...)
 	case http.MethodDelete:
-		r.DELETE(path, s.auth, handler)
+		r.DELETE(path, handlers...)
 	}
 }
 
