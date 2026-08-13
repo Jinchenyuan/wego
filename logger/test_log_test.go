@@ -2,17 +2,10 @@ package logger
 
 import (
 	"bytes"
+	"encoding/json"
 	"log"
-	"regexp"
-	"strings"
 	"testing"
 )
-
-var ansiRegexp = regexp.MustCompile(`\x1b\[[0-9;]*m`)
-
-func stripANSI(s string) string {
-	return ansiRegexp.ReplaceAllString(s, "")
-}
 
 func TestGetLoggerReturnsSharedInstanceForService(t *testing.T) {
 	serviceName := "test-service-shared"
@@ -53,29 +46,19 @@ func TestLoggerSetLevelAndMethodsFilter(t *testing.T) {
 	l.Error("emit this log")
 
 	output := buf.String()
-	plainOutput := stripANSI(output)
-	if strings.Contains(output, "ignore this log") {
+	if bytes.Contains([]byte(output), []byte("ignore this log")) {
 		t.Fatalf("expected info log to be filtered out, output: %q", output)
 	}
-
-	if !strings.Contains(plainOutput, "[account-api ERROR]:") {
-		t.Fatalf("expected output with service/level prefix [account-api ERROR]:, got %q", output)
+	var record map[string]any
+	if err := json.Unmarshal(bytes.TrimSpace(buf.Bytes()), &record); err != nil {
+		t.Fatalf("expected JSON log: %v", err)
 	}
-
-	matched, err := regexp.MatchString(`^\[\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2}\] \[account-api ERROR\]:`, plainOutput)
-	if err != nil {
-		t.Fatalf("failed to match timestamp prefix: %v", err)
-	}
-	if !matched {
-		t.Fatalf("expected timestamp at the beginning of prefix, got %q", output)
-	}
-
-	if !strings.Contains(output, "emit this log") {
-		t.Fatalf("expected error message to be printed, output: %q", output)
+	if record["service"] != "account-api" || record["level"] != "ERROR" || record["message"] != "emit this log" || record["timestamp"] == "" {
+		t.Fatalf("unexpected log record: %#v", record)
 	}
 }
 
-func TestLoggerMethodsColorsByLevel(t *testing.T) {
+func TestLoggerMethodsEmitJSON(t *testing.T) {
 	l := NewLogger("account-api")
 
 	var buf bytes.Buffer
@@ -85,15 +68,15 @@ func TestLoggerMethodsColorsByLevel(t *testing.T) {
 	l.Warn("warn log")
 	l.Error("error log")
 
-	output := buf.String()
-	if !strings.Contains(output, "\x1b[33m") {
-		t.Fatalf("expected WARN log to include yellow color code, output: %q", output)
+	lines := bytes.Split(bytes.TrimSpace(buf.Bytes()), []byte("\n"))
+	if len(lines) != 2 {
+		t.Fatalf("expected two log records, got %q", buf.String())
 	}
-	if !strings.Contains(output, "\x1b[31m") {
-		t.Fatalf("expected ERROR log to include red color code, output: %q", output)
-	}
-	if !strings.Contains(output, "\x1b[0m") {
-		t.Fatalf("expected colored output to include ANSI reset code, output: %q", output)
+	for _, line := range lines {
+		var record map[string]any
+		if err := json.Unmarshal(line, &record); err != nil {
+			t.Fatalf("expected JSON log: %v", err)
+		}
 	}
 }
 
@@ -119,11 +102,11 @@ func TestLoggerFatalCallsExit(t *testing.T) {
 		t.Fatalf("expected exit code 1, got %d", exitCode)
 	}
 
-	plainOutput := stripANSI(buf.String())
-	if !strings.Contains(plainOutput, "[account-api FATAL]:") {
-		t.Fatalf("expected fatal prefix in output, got %q", plainOutput)
+	var record map[string]any
+	if err := json.Unmarshal(bytes.TrimSpace(buf.Bytes()), &record); err != nil {
+		t.Fatalf("expected JSON log: %v", err)
 	}
-	if !strings.Contains(plainOutput, "fatal log") {
-		t.Fatalf("expected fatal message in output, got %q", plainOutput)
+	if record["level"] != "FATAL" || record["message"] != "fatal log" {
+		t.Fatalf("unexpected fatal record: %#v", record)
 	}
 }

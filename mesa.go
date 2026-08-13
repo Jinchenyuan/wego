@@ -14,6 +14,7 @@ import (
 	"github.com/Jinchenyuan/wego/logger"
 	"github.com/Jinchenyuan/wego/pubsub"
 	"github.com/Jinchenyuan/wego/reminder"
+	"github.com/Jinchenyuan/wego/telemetry"
 	"github.com/Jinchenyuan/wego/third_party/etcd"
 	"github.com/Jinchenyuan/wego/transport"
 	httptransport "github.com/Jinchenyuan/wego/transport/http"
@@ -62,6 +63,7 @@ type Mesa struct {
 	etcdCtl *etcd.Ctl
 	DB      *bun.DB
 	Redis   *redis.Client
+	Metrics *telemetry.Registry
 
 	runtimeMu      sync.RWMutex
 	state          RuntimeState
@@ -81,7 +83,7 @@ func New(opts ...Options) (*Mesa, error) {
 	}
 	initLogger(o)
 
-	m := &Mesa{opts: o, state: StateNew, componentIndex: make(map[string]Component), shutdownDone: make(chan struct{})}
+	m := &Mesa{opts: o, state: StateNew, componentIndex: make(map[string]Component), shutdownDone: make(chan struct{}), Metrics: telemetry.NewRegistry()}
 	var err error
 	if o.dsn != "" {
 		m.DB, err = newDB(o.dsn)
@@ -105,7 +107,8 @@ func New(opts ...Options) (*Mesa, error) {
 		}
 	}
 	if o.HttpPort > 0 {
-		hs := httptransport.NewHTTPServer(httptransport.WithHost(net.ParseIP("0.0.0.0")), httptransport.WithPort(o.HttpPort), httptransport.WithType(transport.HTTP))
+		hcfg := o.HTTPConfig
+		hs := httptransport.NewHTTPServer(httptransport.WithHost(net.ParseIP("0.0.0.0")), httptransport.WithPort(o.HttpPort), httptransport.WithType(transport.HTTP), httptransport.WithTimeouts(hcfg.ReadHeaderTimeout, hcfg.ReadTimeout, hcfg.WriteTimeout, hcfg.IdleTimeout), httptransport.WithMaxHeaderBytes(hcfg.MaxHeaderBytes), httptransport.WithMaxBodyBytes(hcfg.MaxBodyBytes), httptransport.WithRequestTimeout(hcfg.RequestTimeout))
 		m.registerHealthRoutes(hs)
 		m.servers = append(m.servers, hs)
 	}
@@ -250,6 +253,7 @@ func (m *Mesa) Readiness(ctx context.Context) HealthStatus {
 	defer cancel()
 	m.runtimeMu.RLock()
 	state, db, rdb, etcdCtl := m.state, m.DB, m.Redis, m.etcdCtl
+	m.runtimeMu.RUnlock()
 	status := HealthStatus{OK: state == StateRunning, State: state, Checks: map[string]HealthCheck{}}
 	check := func(name string, err error) {
 		item := HealthCheck{OK: err == nil}
@@ -269,7 +273,6 @@ func (m *Mesa) Readiness(ctx context.Context) HealthStatus {
 		_, err := etcdCtl.Get(checkCtx, "__wego_health__")
 		check("etcd", err)
 	}
-	m.runtimeMu.RUnlock()
 	return status
 }
 
@@ -290,6 +293,7 @@ func (m *Mesa) registerHealthRoutes(server *httptransport.Server) {
 		}
 		c.JSON(code, status)
 	})
+	server.GetEngine().GET("/metrics", gin.WrapH(m.Metrics.Handler()))
 }
 
 func (m *Mesa) GetServerByType(typ transport.NetType) transport.Server {
@@ -377,7 +381,7 @@ func newDB(dsn string) (*bun.DB, error) {
 	return bun.NewDB(sqldb, pgdialect.New()), nil
 }
 func newRedis(cfg RedisConfig) (*redis.Client, error) {
-	rdb := redis.NewClient(&redis.Options{Addr: cfg.Addr, Password: cfg.Password, DB: cfg.DB, DialTimeout: 5 * time.Second, ReadTimeout: 3 * time.Second, WriteTimeout: 3 * time.Second, PoolSize: 50, MinIdleConns: 10})
+	rdb := redis.NewClient(&redis.Options{Addr: cfg.Addr, Password: cfg.Password, DB: cfg.DB, TLSConfig: cfg.TLSConfig, DialTimeout: 5 * time.Second, ReadTimeout: 3 * time.Second, WriteTimeout: 3 * time.Second, PoolSize: 50, MinIdleConns: 10})
 	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
 	defer cancel()
 	if err := rdb.Ping(ctx).Err(); err != nil {

@@ -1,0 +1,11 @@
+.git
+.github
+.agents
+.codex
+third_party
+**/*_test.go
+*.local
+*.env
+config.toml
+bin
+dist

@@ -1,0 +1,27 @@
+replicaCount: 2
+
+image:
+  repository: wego-http-server-example
+  tag: latest
+  pullPolicy: IfNotPresent
+
+service:
+  port: 8080
+
+resources:
+  requests:
+    cpu: 100m
+    memory: 128Mi
+  limits:
+    cpu: "1"
+    memory: 512Mi
+
+env:
+  - name: WEGO_HTTP_PORT
+    value: "8080"
+
+autoscaling:
+  enabled: true
+  minReplicas: 2
+  maxReplicas: 10
+  targetCPUUtilizationPercentage: 70

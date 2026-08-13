@@ -1,6 +1,7 @@
 package wego
 
 import (
+	"crypto/tls"
 	"time"
 
 	"github.com/Jinchenyuan/wego/logger"
@@ -14,9 +15,21 @@ import (
 type Options func(o *options)
 
 type RedisConfig struct {
-	Addr     string
-	Password string
-	DB       int
+	Addr      string
+	Password  string
+	DB        int
+	TLSConfig *tls.Config
+}
+
+type HTTPConfig struct {
+	Port              int
+	ReadHeaderTimeout time.Duration
+	ReadTimeout       time.Duration
+	WriteTimeout      time.Duration
+	IdleTimeout       time.Duration
+	MaxHeaderBytes    int
+	MaxBodyBytes      int64
+	RequestTimeout    time.Duration
 }
 
 type PubSubComponentConfig struct {
@@ -58,7 +71,8 @@ type Profile struct {
 type options struct {
 	LogLevel logger.Level
 
-	HttpPort int
+	HttpPort   int
+	HTTPConfig HTTPConfig
 
 	EtcdConfig clientv3.Config
 
@@ -96,6 +110,15 @@ func WithDSN(dsn string) Options {
 func WithHttpPort(port int) Options {
 	return func(o *options) {
 		o.HttpPort = port
+	}
+}
+
+func WithHTTPConfig(cfg HTTPConfig) Options {
+	return func(o *options) {
+		o.HTTPConfig = cfg
+		if cfg.Port > 0 {
+			o.HttpPort = cfg.Port
+		}
 	}
 }
 

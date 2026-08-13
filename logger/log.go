@@ -1,6 +1,7 @@
 package logger
 
 import (
+	"encoding/json"
 	"fmt"
 	"log"
 	"os"
@@ -149,12 +150,13 @@ func (l *Logger) log(level Level, v ...any) {
 		return
 	}
 
-	ts := time.Now().Format("2006-01-02 15:04:05")
-	prefix := fmt.Sprintf("[%s] [%s %s]:", ts, serviceName, level.String())
-	if color := levelColor(level); color != "" {
-		prefix = color + prefix + ansiReset
+	record := map[string]any{"timestamp": time.Now().UTC().Format(time.RFC3339Nano), "service": serviceName, "level": level.String(), "message": fmt.Sprint(v...)}
+	data, err := json.Marshal(record)
+	if err != nil {
+		base.Println(record["message"])
+		return
 	}
-	base.Println(append([]any{prefix}, v...)...)
+	base.Println(string(data))
 }
 
 func levelColor(level Level) string {

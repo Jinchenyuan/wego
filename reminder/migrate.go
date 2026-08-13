@@ -4,6 +4,9 @@ import (
 	"context"
 	"embed"
 	"fmt"
+	"path"
+	"sort"
+	"strings"
 
 	"github.com/uptrace/bun"
 )
@@ -23,13 +26,27 @@ func Migrate(ctx context.Context, db *bun.DB) error {
 	if _, err = tx.ExecContext(ctx, `CREATE TABLE IF NOT EXISTS wego_schema_migrations (component TEXT NOT NULL, version TEXT NOT NULL, applied_at TIMESTAMPTZ NOT NULL DEFAULT NOW(), PRIMARY KEY (component, version))`); err != nil {
 		return err
 	}
-	const version = "001_init"
-	var exists bool
-	if err = tx.QueryRowContext(ctx, `SELECT EXISTS(SELECT 1 FROM wego_schema_migrations WHERE component = 'reminder' AND version = $1)`, version).Scan(&exists); err != nil {
+	files, err := migrations.ReadDir("migrations")
+	if err != nil {
 		return err
 	}
-	if !exists {
-		sql, readErr := migrations.ReadFile("migrations/001_init.sql")
+	names := make([]string, 0, len(files))
+	for _, file := range files {
+		if !file.IsDir() && strings.HasSuffix(file.Name(), ".sql") {
+			names = append(names, file.Name())
+		}
+	}
+	sort.Strings(names)
+	for _, name := range names {
+		version := strings.TrimSuffix(name, path.Ext(name))
+		var exists bool
+		if err = tx.QueryRowContext(ctx, `SELECT EXISTS(SELECT 1 FROM wego_schema_migrations WHERE component = 'reminder' AND version = $1)`, version).Scan(&exists); err != nil {
+			return err
+		}
+		if exists {
+			continue
+		}
+		sql, readErr := migrations.ReadFile(path.Join("migrations", name))
 		if readErr != nil {
 			return readErr
 		}

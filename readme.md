@@ -374,6 +374,60 @@ defer stop()
 return mesa.Run(ctx)
 ```
 
+### Production baseline
+
+The default HTTP transport uses bounded header, request, response, idle, body,
+and header sizes. Override them without breaking the legacy `WithHttpPort` API:
+
+```go
+m, err := wego.New(wego.WithHTTPConfig(wego.HTTPConfig{
+	Port:              8080,
+	ReadHeaderTimeout: 3 * time.Second,
+	ReadTimeout:       10 * time.Second,
+	WriteTimeout:      20 * time.Second,
+	IdleTimeout:       60 * time.Second,
+	MaxHeaderBytes:    1 << 20,
+	MaxBodyBytes:      8 << 20,
+	RequestTimeout:    15 * time.Second,
+}))
+```
+
+`/livez`, `/readyz`, and `/metrics` are exposed by the default server. Logs are
+newline-delimited JSON. Redis TLS can be configured with
+`RedisConfig.TLSConfig`; TLS termination for public HTTP traffic is expected at
+the Kubernetes Ingress. Reusable CORS, security-header, and per-instance rate
+limit middleware is available in `middleware`.
+
+### Deployable HTTP example
+
+`examples/http-server` is a minimal application that uses the Mesa lifecycle,
+registers `GET /hello`, and includes Docker and Helm deployment assets. Run it
+locally from the repository root:
+
+```sh
+go run ./examples/http-server
+curl http://127.0.0.1:8080/hello
+```
+
+The default server also exposes `/livez`, `/readyz`, and `/metrics`. Override
+the port with `WEGO_HTTP_PORT`.
+
+Build the image with the repository root as the Docker context:
+
+```sh
+docker build -f examples/http-server/Dockerfile -t wego-http-server-example .
+docker run --rm -p 8080:8080 wego-http-server-example
+```
+
+Install the example chart after publishing the image to a registry:
+
+```sh
+helm upgrade --install wego-http-server \
+  examples/http-server/deploy/helm/http-server \
+  --set image.repository=registry.example.com/wego-http-server-example \
+  --set image.tag=1.0.0
+```
+
 ### Usage
 Import packages to your .go files.
 
