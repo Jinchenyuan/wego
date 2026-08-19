@@ -18,12 +18,23 @@ type Registry struct {
 func NewRegistry() *Registry { return &Registry{counters: make(map[string]float64)} }
 
 func (r *Registry) Inc(name string, labels map[string]string) {
+	r.Add(name, labels, 1)
+}
+
+func (r *Registry) Add(name string, labels map[string]string, value float64) {
 	if r == nil {
 		return
 	}
 	r.mu.Lock()
-	r.counters[metricKey(name, labels)]++
+	r.counters[metricKey(name, labels)] += value
 	r.mu.Unlock()
+}
+
+// Observe exports a Prometheus-compatible summary pair without retaining raw
+// observations in memory.
+func (r *Registry) Observe(name string, labels map[string]string, value float64) {
+	r.Add(name+"_sum", labels, value)
+	r.Add(name+"_count", labels, 1)
 }
 
 func (r *Registry) Handler() http.Handler {

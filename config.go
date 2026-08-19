@@ -8,6 +8,7 @@ import (
 	"time"
 
 	"github.com/Jinchenyuan/wego/logger"
+	"github.com/Jinchenyuan/wego/telemetry"
 	clientv3 "go.etcd.io/etcd/client/v3"
 )
 
@@ -16,6 +17,7 @@ import (
 type Config struct {
 	Profile     Profile
 	LogLevel    string
+	Telemetry   telemetry.Config
 	HTTP        HTTPConfig
 	PostgresDSN string
 	Redis       RedisConfig
@@ -38,6 +40,17 @@ func (c Config) Validate() error {
 	}
 	if c.HTTP.Port < 0 || c.HTTP.Port > 65535 {
 		invalid("http.port", "must be between 0 and 65535")
+	}
+	if c.Telemetry.TraceSampleRatio < 0 || c.Telemetry.TraceSampleRatio > 1 {
+		invalid("telemetry.trace_sample_ratio", "must be between 0 and 1")
+	}
+	if c.Telemetry.Enabled {
+		if strings.TrimSpace(c.Telemetry.ServiceName) == "" && strings.TrimSpace(c.Profile.Name) == "" {
+			invalid("telemetry.service_name", "is required when telemetry is enabled")
+		}
+		if strings.TrimSpace(c.Telemetry.OTLPEndpoint) == "" {
+			invalid("telemetry.otlp_endpoint", "is required when telemetry is enabled")
+		}
 	}
 	for field, value := range map[string]time.Duration{
 		"http.read_header_timeout": c.HTTP.ReadHeaderTimeout,
@@ -89,9 +102,14 @@ func (c Config) Options() ([]Options, error) {
 	if err := c.Validate(); err != nil {
 		return nil, err
 	}
+	telemetryConfig := c.Telemetry
+	if strings.TrimSpace(telemetryConfig.ServiceName) == "" {
+		telemetryConfig.ServiceName = strings.TrimSpace(c.Profile.Name)
+	}
 	return []Options{
 		WithProfile(c.Profile),
 		WithLogLevel(logger.ParseLevel(c.LogLevel)),
+		WithTelemetry(telemetryConfig),
 		WithHTTPConfig(c.HTTP),
 		WithDSN(c.PostgresDSN),
 		WithRedisConfig(c.Redis),

@@ -1,6 +1,7 @@
 package micro
 
 import (
+	"github.com/Jinchenyuan/wego/telemetry"
 	"github.com/Jinchenyuan/wego/transport"
 	"go-micro.dev/v5/registry"
 )
@@ -17,6 +18,11 @@ type options struct {
 	reg           registry.Registry
 	Type          transport.NetType
 	serviceScheme ServiceScheme
+	telemetry     *telemetry.Runtime
+}
+
+func WithTelemetry(runtime *telemetry.Runtime) Options {
+	return func(o *options) { o.telemetry = runtime }
 }
 
 func WithServiceScheme(scheme ServiceScheme) Options {

@@ -10,6 +10,9 @@ import (
 
 	"github.com/Jinchenyuan/wego/logger"
 	"github.com/uptrace/bun"
+	"go.opentelemetry.io/otel/attribute"
+	"go.opentelemetry.io/otel/codes"
+	"go.opentelemetry.io/otel/trace"
 )
 
 type Service struct {
@@ -149,10 +152,26 @@ func (s *Service) processBatch(ctx context.Context) error {
 }
 
 func (s *Service) dispatch(ctx context.Context, item *Reminder) error {
+	ctx, span := s.opts.telemetry.Tracer("wego/reminder").Start(ctx, "reminder notify",
+		trace.WithSpanKind(trace.SpanKindConsumer),
+		trace.WithAttributes(attribute.String("wego.reminder.channel", item.Channel), attribute.Int("wego.reminder.retry_count", item.RetryCount)),
+	)
+	defer span.End()
+	start := time.Now()
 	err := s.notifier.Notify(ctx, item)
 	if err == nil {
-		return s.store.MarkSent(ctx, item.ID, s.opts.now())
+		err = s.store.MarkSent(ctx, item.ID, s.opts.now())
+		result := "sent"
+		if err != nil {
+			result = "error"
+			span.RecordError(err)
+			span.SetStatus(codes.Error, err.Error())
+		}
+		s.recordDispatch(item.Channel, result, start)
+		return err
 	}
+	span.RecordError(err)
+	span.SetStatus(codes.Error, err.Error())
 
 	message := strings.TrimSpace(err.Error())
 	if message == "" {
@@ -164,6 +183,7 @@ func (s *Service) dispatch(ctx context.Context, item *Reminder) error {
 			return fmt.Errorf("notify: %w; mark failed: %v", err, markErr)
 		}
 		s.opts.logger.Warn("reminder permanently failed:", item.Key, message)
+		s.recordDispatch(item.Channel, "failed", start)
 		return nil
 	}
 
@@ -173,7 +193,14 @@ func (s *Service) dispatch(ctx context.Context, item *Reminder) error {
 	}
 
 	s.opts.logger.Warn("reminder rescheduled:", item.Key, message)
+	s.recordDispatch(item.Channel, "retry", start)
 	return nil
+}
+
+func (s *Service) recordDispatch(channel string, result string, start time.Time) {
+	labels := map[string]string{"channel": channel, "result": result}
+	s.opts.metrics.Inc("wego_reminder_dispatches_total", labels)
+	s.opts.metrics.Observe("wego_reminder_dispatch_duration_seconds", labels, time.Since(start).Seconds())
 }
 
 func (s *Service) retryDelay(attempt int) time.Duration {

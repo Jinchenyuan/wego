@@ -11,6 +11,10 @@ import (
 
 	"github.com/Jinchenyuan/wego/logger"
 	redis "github.com/redis/go-redis/v9"
+	"go.opentelemetry.io/otel/attribute"
+	"go.opentelemetry.io/otel/codes"
+	"go.opentelemetry.io/otel/propagation"
+	"go.opentelemetry.io/otel/trace"
 )
 
 type Service struct {
@@ -78,7 +82,24 @@ func (s *Service) Publish(ctx context.Context, topic string, msg Message) (strin
 	if normalizeTopic(topic) == "" {
 		return "", ErrInvalidTopic
 	}
-	return s.store.Publish(ctx, topic, msg)
+	ctx, span := s.opts.telemetry.Tracer("wego/pubsub").Start(ctx, "pubsub publish "+normalizeTopic(topic),
+		trace.WithSpanKind(trace.SpanKindProducer),
+		trace.WithAttributes(attribute.String("messaging.destination.name", normalizeTopic(topic))),
+	)
+	defer span.End()
+	msg.Headers = cloneHeaders(msg.Headers)
+	s.opts.telemetry.Propagator().Inject(ctx, propagation.MapCarrier(msg.Headers))
+	id, err := s.store.Publish(ctx, topic, msg)
+	if err != nil {
+		span.RecordError(err)
+		span.SetStatus(codes.Error, err.Error())
+	}
+	result := "success"
+	if err != nil {
+		result = "error"
+	}
+	s.opts.metrics.Inc("wego_pubsub_published_total", map[string]string{"topic": normalizeTopic(topic), "result": result})
+	return id, err
 }
 
 func (s *Service) Subscribe(sub Subscription) error {
@@ -176,6 +197,16 @@ func (s *Service) handleEntry(ctx context.Context, sub Subscription, consumer st
 		_ = s.store.Ack(ctx, sub.Topic, sub.Group, entry.ID)
 		return
 	}
+	ctx = s.opts.telemetry.Propagator().Extract(ctx, propagation.MapCarrier(delivery.Message.Headers))
+	ctx, span := s.opts.telemetry.Tracer("wego/pubsub").Start(ctx, "pubsub consume "+sub.Topic,
+		trace.WithSpanKind(trace.SpanKindConsumer),
+		trace.WithAttributes(
+			attribute.String("messaging.destination.name", sub.Topic),
+			attribute.String("messaging.consumer.group.name", sub.Group),
+			attribute.Int("messaging.message.delivery_count", delivery.Attempt),
+		),
+	)
+	defer span.End()
 
 	retry := effectiveRetry(sub, s.opts.retry)
 	if delivery.Message.MaxDeliver <= 0 {
@@ -189,7 +220,10 @@ func (s *Service) handleEntry(ctx context.Context, sub Subscription, consumer st
 	}
 
 	if err := sub.Handler.Handle(ctx, delivery); err != nil {
-		s.opts.logger.Warn("pubsub handler failed:", err)
+		span.RecordError(err)
+		span.SetStatus(codes.Error, err.Error())
+		s.opts.metrics.Inc("wego_pubsub_deliveries_total", map[string]string{"topic": sub.Topic, "group": sub.Group, "result": "error"})
+		s.opts.logger.WarnContext(ctx, "pubsub handler failed:", err)
 		nextAttempt := delivery.Attempt + 1
 		if nextAttempt > delivery.Message.MaxDeliver {
 			if s.opts.dlq.Enabled {
@@ -210,9 +244,21 @@ func (s *Service) handleEntry(ctx context.Context, sub Subscription, consumer st
 		return
 	}
 
+	result := "success"
 	if err := s.store.Ack(ctx, sub.Topic, sub.Group, delivery.ID); err != nil {
-		s.opts.logger.Error("pubsub ack failed:", err)
+		result = "error"
+		span.RecordError(err)
+		s.opts.logger.ErrorContext(ctx, "pubsub ack failed:", err)
 	}
+	s.opts.metrics.Inc("wego_pubsub_deliveries_total", map[string]string{"topic": sub.Topic, "group": sub.Group, "result": result})
+}
+
+func cloneHeaders(headers map[string]string) map[string]string {
+	cloned := make(map[string]string, len(headers)+2)
+	for key, value := range headers {
+		cloned[key] = value
+	}
+	return cloned
 }
 
 func retryDelay(policy RetryPolicy, attempt int) time.Duration {

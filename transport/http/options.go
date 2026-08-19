@@ -4,6 +4,7 @@ import (
 	"net"
 	"time"
 
+	"github.com/Jinchenyuan/wego/telemetry"
 	"github.com/Jinchenyuan/wego/transport"
 )
 
@@ -20,6 +21,15 @@ type options struct {
 	MaxHeaderBytes    int
 	MaxBodyBytes      int64
 	RequestTimeout    time.Duration
+	Telemetry         *telemetry.Runtime
+	Metrics           *telemetry.Registry
+}
+
+func WithTelemetry(runtime *telemetry.Runtime, metrics *telemetry.Registry) Options {
+	return func(o *options) {
+		o.Telemetry = runtime
+		o.Metrics = metrics
+	}
 }
 
 func WithType(typ transport.NetType) Options {

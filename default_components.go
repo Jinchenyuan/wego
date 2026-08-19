@@ -21,7 +21,8 @@ var defaultComponentRegistrars = []defaultComponentRegistrar{
 			if m.Redis == nil {
 				return pubsub.ErrRedisNotConfigured
 			}
-			service := pubsub.NewService(m.Redis, m.opts.components.PubSub.buildOptions()...)
+			opts := append(m.opts.components.PubSub.buildOptions(), pubsub.WithTelemetry(m.Telemetry, m.Metrics))
+			service := pubsub.NewService(m.Redis, opts...)
 			return m.RegisterComponent(service)
 		},
 	},
@@ -37,10 +38,11 @@ var defaultComponentRegistrars = []defaultComponentRegistrar{
 			if m.opts.components.Reminder.Notifier == nil {
 				return ErrReminderNotifierNotConfigured
 			}
+			opts := append(m.opts.components.Reminder.buildOptions(), reminder.WithTelemetry(m.Telemetry, m.Metrics))
 			service := reminder.NewService(
 				m.DB,
 				m.opts.components.Reminder.Notifier,
-				m.opts.components.Reminder.buildOptions()...,
+				opts...,
 			)
 			return m.RegisterComponent(service)
 		},

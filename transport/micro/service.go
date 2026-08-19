@@ -8,6 +8,7 @@ import (
 	"github.com/Jinchenyuan/wego/transport"
 	goMicro "go-micro.dev/v5"
 	"go-micro.dev/v5/registry"
+	otelmicro "go-micro.dev/v5/wrapper/trace/opentelemetry"
 )
 
 type RegisterHandler func(goMicro.Service) error
@@ -48,11 +49,20 @@ func (s *Service) NewServiceClients(nsc NewServiceClients) {
 }
 
 func (s *Service) RegisterHandler(handler RegisterHandler) error {
-	s.service = goMicro.NewService(
+	serviceOptions := []goMicro.Option{
 		goMicro.Name(string(s.opts.serviceScheme.Name)),
 		goMicro.Address(fmt.Sprintf(":%d", s.opts.serviceScheme.Port)),
 		goMicro.Registry(s.opts.reg),
-	)
+	}
+	if s.opts.telemetry != nil {
+		traceOptions := otelmicro.WithTraceProvider(s.opts.telemetry.TracerProvider())
+		serviceOptions = append(serviceOptions,
+			goMicro.WrapClient(otelmicro.NewClientWrapper(traceOptions)),
+			goMicro.WrapHandler(otelmicro.NewHandlerWrapper(traceOptions)),
+			goMicro.WrapSubscriber(otelmicro.NewSubscriberWrapper(traceOptions)),
+		)
+	}
+	s.service = goMicro.NewService(serviceOptions...)
 	s.service.Init()
 	if err := handler(s.service); err != nil {
 		return err

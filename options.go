@@ -7,6 +7,7 @@ import (
 	"github.com/Jinchenyuan/wego/logger"
 	"github.com/Jinchenyuan/wego/pubsub"
 	"github.com/Jinchenyuan/wego/reminder"
+	"github.com/Jinchenyuan/wego/telemetry"
 	"github.com/Jinchenyuan/wego/transport"
 	"github.com/Jinchenyuan/wego/transport/micro"
 	clientv3 "go.etcd.io/etcd/client/v3"
@@ -69,7 +70,8 @@ type Profile struct {
 }
 
 type options struct {
-	LogLevel logger.Level
+	LogLevel  logger.Level
+	Telemetry telemetry.Config
 
 	HttpPort   int
 	HTTPConfig HTTPConfig
@@ -93,6 +95,10 @@ func WithProfile(p Profile) Options {
 	return func(o *options) {
 		o.profile = p
 	}
+}
+
+func WithTelemetry(cfg telemetry.Config) Options {
+	return func(o *options) { o.Telemetry = cfg }
 }
 
 func WithServiceScheme(scheme micro.ServiceScheme) Options {

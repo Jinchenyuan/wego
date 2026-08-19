@@ -4,16 +4,21 @@ import (
 	"context"
 	"errors"
 	"fmt"
-	"log"
 	"net"
 	"net/http"
 	"runtime/debug"
+	"strconv"
 	"strings"
 	"sync"
 	"time"
 
+	"github.com/Jinchenyuan/wego/logger"
 	"github.com/Jinchenyuan/wego/transport"
 	"github.com/gin-gonic/gin"
+	"go.opentelemetry.io/otel/attribute"
+	"go.opentelemetry.io/otel/codes"
+	"go.opentelemetry.io/otel/propagation"
+	"go.opentelemetry.io/otel/trace"
 )
 
 type Server struct {
@@ -35,7 +40,7 @@ func NewHTTPServer(opts ...Options) *Server {
 	}
 
 	r := gin.New()
-	r.Use(recovery(), requestID(), requestLimits(o.MaxBodyBytes, o.RequestTimeout), accessLog())
+	r.Use(recovery(), requestID(), telemetryMiddleware(o), requestLimits(o.MaxBodyBytes, o.RequestTimeout), accessLog())
 	srv := &http.Server{
 		Addr:              fmt.Sprintf(":%d", o.Port),
 		Handler:           r,
@@ -50,6 +55,37 @@ func NewHTTPServer(opts ...Options) *Server {
 	return hs
 }
 
+func telemetryMiddleware(opts options) gin.HandlerFunc {
+	return func(c *gin.Context) {
+		ctx := c.Request.Context()
+		if opts.Telemetry != nil {
+			ctx = opts.Telemetry.Propagator().Extract(ctx, propagation.HeaderCarrier(c.Request.Header))
+		}
+		ctx, span := opts.Telemetry.Tracer("wego/transport/http").Start(ctx, c.Request.Method+" "+c.Request.URL.Path,
+			trace.WithSpanKind(trace.SpanKindServer),
+			trace.WithAttributes(attribute.String("http.request.method", c.Request.Method)),
+		)
+		defer span.End()
+		c.Request = c.Request.WithContext(ctx)
+		start := time.Now()
+		c.Next()
+
+		route := c.FullPath()
+		if route == "" {
+			route = "unmatched"
+		}
+		status := c.Writer.Status()
+		span.SetName(c.Request.Method + " " + route)
+		span.SetAttributes(attribute.String("http.route", route), attribute.Int("http.response.status_code", status))
+		if status >= http.StatusInternalServerError {
+			span.SetStatus(codes.Error, http.StatusText(status))
+		}
+		labels := map[string]string{"method": c.Request.Method, "route": route, "status": strconv.Itoa(status)}
+		opts.Metrics.Inc("wego_http_server_requests_total", labels)
+		opts.Metrics.Observe("wego_http_server_request_duration_seconds", labels, time.Since(start).Seconds())
+	}
+}
+
 func requestID() gin.HandlerFunc {
 	return func(c *gin.Context) {
 		id := c.GetHeader("X-Request-ID")
@@ -58,6 +94,7 @@ func requestID() gin.HandlerFunc {
 		}
 		c.Header("X-Request-ID", id)
 		c.Set("request_id", id)
+		c.Request = c.Request.WithContext(logger.ContextWithRequestID(c.Request.Context(), id))
 		c.Next()
 	}
 }
@@ -78,7 +115,7 @@ func recovery() gin.HandlerFunc {
 	return func(c *gin.Context) {
 		defer func() {
 			if r := recover(); r != nil {
-				log.Printf("panic method=%s path=%s error=%v stack=%s", c.Request.Method, c.Request.URL.Path, r, debug.Stack())
+				logger.GetLogger("http").ErrorContext(c.Request.Context(), "panic method=", c.Request.Method, " path=", c.Request.URL.Path, " error=", r, " stack=", string(debug.Stack()))
 				c.AbortWithStatus(http.StatusInternalServerError)
 			}
 		}()
@@ -89,7 +126,7 @@ func accessLog() gin.HandlerFunc {
 	return func(c *gin.Context) {
 		start := time.Now()
 		c.Next()
-		log.Printf("http method=%s path=%s status=%d duration_ms=%d request_id=%s", c.Request.Method, c.FullPath(), c.Writer.Status(), time.Since(start).Milliseconds(), strings.TrimSpace(c.GetString("request_id")))
+		logger.GetLogger("http").InfoContext(c.Request.Context(), "http method=", c.Request.Method, " path=", c.FullPath(), " status=", c.Writer.Status(), " duration_ms=", time.Since(start).Milliseconds(), " request_id=", strings.TrimSpace(c.GetString("request_id")))
 	}
 }
 

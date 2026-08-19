@@ -428,6 +428,36 @@ newline-delimited JSON. Redis TLS can be configured with
 the Kubernetes Ingress. Reusable CORS, security-header, and per-instance rate
 limit middleware is available in `middleware`.
 
+### OpenTelemetry tracing
+
+Tracing is configured per Mesa instance and is disabled by default. When
+enabled, Wego exports spans through OTLP gRPC and automatically instruments the
+HTTP server, go-micro handlers/clients, PostgreSQL, Redis, Pub/Sub, and
+Reminder delivery. W3C trace context is propagated through HTTP headers and
+Pub/Sub message headers.
+
+```go
+cfg := wego.Config{
+	Profile: wego.Profile{Name: "orders"},
+	Telemetry: telemetry.Config{
+		Enabled:          true,
+		OTLPEndpoint:     "otel-collector:4317",
+		Insecure:         true, // use false with TLS credentials at the collector
+		TraceSampleRatio: 0.1,
+	},
+}
+opts, err := cfg.Options()
+if err != nil {
+	return err
+}
+mesa, err := wego.New(opts...)
+```
+
+The default `/metrics` endpoint remains available and includes bounded-label
+request, database, Redis, Pub/Sub, and Reminder counters and duration summaries.
+Telemetry never records request bodies, message payloads, credentials, user
+IDs, or reminder keys.
+
 ### Deployable HTTP example
 
 `examples/http-server` is a minimal application that uses the Mesa lifecycle,

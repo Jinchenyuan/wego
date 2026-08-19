@@ -16,3 +16,13 @@ func TestRegistryPrometheusOutput(t *testing.T) {
 		t.Fatalf("metrics = %q", got)
 	}
 }
+
+func TestRegistryObserveOutput(t *testing.T) {
+	r := NewRegistry()
+	r.Observe("wego_request_duration_seconds", map[string]string{"route": "/health"}, 0.25)
+	w := httptest.NewRecorder()
+	r.Handler().ServeHTTP(w, httptest.NewRequest("GET", "/metrics", nil))
+	if got := w.Body.String(); !strings.Contains(got, "wego_request_duration_seconds_sum{route=\"/health\"} 0.25") || !strings.Contains(got, "wego_request_duration_seconds_count{route=\"/health\"} 1") {
+		t.Fatalf("metrics = %q", got)
+	}
+}

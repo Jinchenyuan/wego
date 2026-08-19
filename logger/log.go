@@ -1,6 +1,7 @@
 package logger
 
 import (
+	"context"
 	"encoding/json"
 	"fmt"
 	"log"
@@ -8,6 +9,8 @@ import (
 	"strings"
 	"sync"
 	"time"
+
+	"go.opentelemetry.io/otel/trace"
 )
 
 type Level int8
@@ -75,6 +78,20 @@ type Logger struct {
 	base        *log.Logger
 }
 
+type requestIDKey struct{}
+
+func ContextWithRequestID(ctx context.Context, requestID string) context.Context {
+	return context.WithValue(ctx, requestIDKey{}, strings.TrimSpace(requestID))
+}
+
+func RequestIDFromContext(ctx context.Context) string {
+	if ctx == nil {
+		return ""
+	}
+	requestID, _ := ctx.Value(requestIDKey{}).(string)
+	return requestID
+}
+
 // NewLogger creates an independent logger instance for a service.
 func NewLogger(serviceName string) *Logger {
 	name := strings.TrimSpace(serviceName)
@@ -134,12 +151,21 @@ func (l *Logger) Error(v ...any) {
 	l.log(Error, v...)
 }
 
+func (l *Logger) DebugContext(ctx context.Context, v ...any) { l.logContext(ctx, Debug, v...) }
+func (l *Logger) InfoContext(ctx context.Context, v ...any)  { l.logContext(ctx, Info, v...) }
+func (l *Logger) WarnContext(ctx context.Context, v ...any)  { l.logContext(ctx, Warn, v...) }
+func (l *Logger) ErrorContext(ctx context.Context, v ...any) { l.logContext(ctx, Error, v...) }
+
 func (l *Logger) Fatal(v ...any) {
 	l.log(Fatal, v...)
 	exitProcess(1)
 }
 
 func (l *Logger) log(level Level, v ...any) {
+	l.logContext(context.Background(), level, v...)
+}
+
+func (l *Logger) logContext(ctx context.Context, level Level, v ...any) {
 	l.mu.RLock()
 	currentLevel := l.level
 	serviceName := l.serviceName
@@ -151,6 +177,13 @@ func (l *Logger) log(level Level, v ...any) {
 	}
 
 	record := map[string]any{"timestamp": time.Now().UTC().Format(time.RFC3339Nano), "service": serviceName, "level": level.String(), "message": fmt.Sprint(v...)}
+	if requestID := RequestIDFromContext(ctx); requestID != "" {
+		record["request_id"] = requestID
+	}
+	if spanContext := trace.SpanContextFromContext(ctx); spanContext.IsValid() {
+		record["trace_id"] = spanContext.TraceID().String()
+		record["span_id"] = spanContext.SpanID().String()
+	}
 	data, err := json.Marshal(record)
 	if err != nil {
 		base.Println(record["message"])

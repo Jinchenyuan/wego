@@ -6,14 +6,15 @@ import (
 	"time"
 
 	"github.com/Jinchenyuan/wego/logger"
+	"github.com/Jinchenyuan/wego/telemetry"
 )
 
 type Option func(*options)
 
 type RetryPolicy struct {
-	MaxDeliver   int
-	Backoff      []time.Duration
-	IdleTimeout  time.Duration
+	MaxDeliver    int
+	Backoff       []time.Duration
+	IdleTimeout   time.Duration
 	ClaimInterval time.Duration
 }
 
@@ -38,6 +39,15 @@ type options struct {
 	dlq           DeadLetterPolicy
 	consumerNamer func() string
 	now           func() time.Time
+	telemetry     *telemetry.Runtime
+	metrics       *telemetry.Registry
+}
+
+func WithTelemetry(runtime *telemetry.Runtime, metrics *telemetry.Registry) Option {
+	return func(o *options) {
+		o.telemetry = runtime
+		o.metrics = metrics
+	}
 }
 
 func defaultOptions() options {

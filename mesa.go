@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"net"
 	"os/signal"
+	"strings"
 	"sync"
 	"syscall"
 	"time"
@@ -59,11 +60,12 @@ type HealthStatus struct {
 type stopper interface{ Stop(context.Context) error }
 
 type Mesa struct {
-	opts    options
-	etcdCtl *etcd.Ctl
-	DB      *bun.DB
-	Redis   *redis.Client
-	Metrics *telemetry.Registry
+	opts      options
+	etcdCtl   *etcd.Ctl
+	DB        *bun.DB
+	Redis     *redis.Client
+	Metrics   *telemetry.Registry
+	Telemetry *telemetry.Runtime
 
 	runtimeMu      sync.RWMutex
 	state          RuntimeState
@@ -82,19 +84,28 @@ func New(opts ...Options) (*Mesa, error) {
 		opt(&o)
 	}
 	initLogger(o)
+	if o.Telemetry.Enabled && strings.TrimSpace(o.Telemetry.ServiceName) == "" {
+		o.Telemetry.ServiceName = strings.TrimSpace(o.profile.Name)
+	}
 
-	m := &Mesa{opts: o, state: StateNew, componentIndex: make(map[string]Component), shutdownDone: make(chan struct{}), Metrics: telemetry.NewRegistry()}
+	tracing, telemetryErr := telemetry.New(context.Background(), o.Telemetry)
+	if telemetryErr != nil {
+		return nil, fmt.Errorf("initialize telemetry: %w", telemetryErr)
+	}
+	m := &Mesa{opts: o, state: StateNew, componentIndex: make(map[string]Component), shutdownDone: make(chan struct{}), Metrics: telemetry.NewRegistry(), Telemetry: tracing}
 	var err error
 	if o.dsn != "" {
-		m.DB, err = newDB(o.dsn)
+		m.DB, err = newDB(o.dsn, m.Telemetry, m.Metrics)
 		if err != nil {
+			_ = m.Telemetry.Shutdown(context.Background())
 			return nil, fmt.Errorf("connect postgres: %w", err)
 		}
 	}
 	if o.RedisConfig.Addr != "" {
-		m.Redis, err = newRedis(o.RedisConfig)
+		m.Redis, err = newRedis(o.RedisConfig, m.Telemetry, m.Metrics)
 		if err != nil {
 			_ = m.closeDB()
+			_ = m.Telemetry.Shutdown(context.Background())
 			return nil, fmt.Errorf("connect redis: %w", err)
 		}
 	}
@@ -103,26 +114,29 @@ func New(opts ...Options) (*Mesa, error) {
 		if err != nil {
 			_ = m.closeRedis()
 			_ = m.closeDB()
+			_ = m.Telemetry.Shutdown(context.Background())
 			return nil, fmt.Errorf("connect etcd: %w", err)
 		}
 	}
 	if o.HttpPort > 0 {
 		hcfg := o.HTTPConfig
-		hs := httptransport.NewHTTPServer(httptransport.WithHost(net.ParseIP("0.0.0.0")), httptransport.WithPort(o.HttpPort), httptransport.WithType(transport.HTTP), httptransport.WithTimeouts(hcfg.ReadHeaderTimeout, hcfg.ReadTimeout, hcfg.WriteTimeout, hcfg.IdleTimeout), httptransport.WithMaxHeaderBytes(hcfg.MaxHeaderBytes), httptransport.WithMaxBodyBytes(hcfg.MaxBodyBytes), httptransport.WithRequestTimeout(hcfg.RequestTimeout))
+		hs := httptransport.NewHTTPServer(httptransport.WithHost(net.ParseIP("0.0.0.0")), httptransport.WithPort(o.HttpPort), httptransport.WithType(transport.HTTP), httptransport.WithTimeouts(hcfg.ReadHeaderTimeout, hcfg.ReadTimeout, hcfg.WriteTimeout, hcfg.IdleTimeout), httptransport.WithMaxHeaderBytes(hcfg.MaxHeaderBytes), httptransport.WithMaxBodyBytes(hcfg.MaxBodyBytes), httptransport.WithRequestTimeout(hcfg.RequestTimeout), httptransport.WithTelemetry(m.Telemetry, m.Metrics))
 		m.registerHealthRoutes(hs)
 		m.servers = append(m.servers, hs)
 	}
 	if o.serviceScheme.Name != "" {
 		if len(o.EtcdConfig.Endpoints) == 0 {
-			m.closeResources()
+			_ = m.closeResources()
+			_ = m.Telemetry.Shutdown(context.Background())
 			return nil, ErrEtcdNotConfigured
 		}
 		reg := etcdReg.NewEtcdRegistry(registry.Addrs(o.EtcdConfig.Endpoints...), etcdReg.Auth(o.EtcdConfig.Username, o.EtcdConfig.Password))
-		m.servers = append(m.servers, micro.NewMicroServer(micro.WithRegistry(reg), micro.WithType(transport.MICRO_SERVER), micro.WithServiceScheme(o.serviceScheme)))
+		m.servers = append(m.servers, micro.NewMicroServer(micro.WithRegistry(reg), micro.WithType(transport.MICRO_SERVER), micro.WithServiceScheme(o.serviceScheme), micro.WithTelemetry(m.Telemetry)))
 	}
 	m.servers = append(m.servers, o.Servers...)
 	if err := m.registerDefaultComponents(); err != nil {
-		m.closeResources()
+		_ = m.closeResources()
+		_ = m.Telemetry.Shutdown(context.Background())
 		return nil, err
 	}
 	SetGlobalMesa(m)
@@ -207,6 +221,7 @@ func (m *Mesa) Shutdown(ctx context.Context) error {
 
 	err := stopItems(ctx, items)
 	err = errors.Join(err, m.closeResources())
+	err = errors.Join(err, m.Telemetry.Shutdown(ctx))
 	m.runtimeMu.Lock()
 	m.shutdownErr = err
 	m.state = StateStopped
@@ -365,7 +380,7 @@ func (m *Mesa) Components() []Component {
 	return append([]Component(nil), m.components...)
 }
 
-func newDB(dsn string) (*bun.DB, error) {
+func newDB(dsn string, tracing *telemetry.Runtime, metrics *telemetry.Registry) (*bun.DB, error) {
 	conn := pgdriver.NewConnector(pgdriver.WithDSN(dsn), pgdriver.WithDialTimeout(5*time.Second))
 	sqldb := sql.OpenDB(conn)
 	sqldb.SetMaxOpenConns(50)
@@ -378,10 +393,13 @@ func newDB(dsn string) (*bun.DB, error) {
 		_ = sqldb.Close()
 		return nil, err
 	}
-	return bun.NewDB(sqldb, pgdialect.New()), nil
+	db := bun.NewDB(sqldb, pgdialect.New())
+	db.AddQueryHook(telemetry.NewBunQueryHook(tracing, metrics))
+	return db, nil
 }
-func newRedis(cfg RedisConfig) (*redis.Client, error) {
+func newRedis(cfg RedisConfig, tracing *telemetry.Runtime, metrics *telemetry.Registry) (*redis.Client, error) {
 	rdb := redis.NewClient(&redis.Options{Addr: cfg.Addr, Password: cfg.Password, DB: cfg.DB, TLSConfig: cfg.TLSConfig, DialTimeout: 5 * time.Second, ReadTimeout: 3 * time.Second, WriteTimeout: 3 * time.Second, PoolSize: 50, MinIdleConns: 10})
+	rdb.AddHook(telemetry.NewRedisHook(tracing, metrics))
 	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
 	defer cancel()
 	if err := rdb.Ping(ctx).Err(); err != nil {
